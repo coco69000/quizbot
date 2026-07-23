@@ -1,0 +1,9 @@
+class _AddGameDialogState extends State<_AddGameDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _c1 = TextEditingController(); // question / riddle / anagram / word
+  final _c2 = TextEditingController(); // correct / answer / hint / lie
+  final _c3 = TextEditingController(); // option3 / solution
+  final _c4 = TextEditingController(); // option4
+  final _c5 = TextEditingController(); // option5 (correct for QCM)
+  final _cEvents = <TextEditingController>[
+    TextEditingController(),
