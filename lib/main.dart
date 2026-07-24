@@ -18,8 +18,8 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 
-// --- CLASSE POUR LE FEEDBACK DU JEU "MOT MYSTÃˆRE" ---
-// ReprÃ©sente le statut de chaque lettre d'une tentative.
+// --- CLASSE POUR LE FEEDBACK DU JEU "MOT MYSTÈRE" ---
+// Représente le statut de chaque lettre d'une tentative.
 enum LetterStatus { none, notInWord, inWord, correctPosition }
 
 class LetterFeedback {
@@ -30,19 +30,68 @@ class LetterFeedback {
 }
 
 Future<Map<String, dynamic>> callSecureAI({
-  required String model,
+  String? model,
   required String systemMessage,
   required String prompt,
   double temperature = 0.3,
+  bool imageRequested = false,
 }) async {
-  final callable = FirebaseFunctions.instance.httpsCallable('generateQuiz');
-  final result = await callable.call({
-    'model': model,
-    'systemMessage': systemMessage,
-    'prompt': prompt,
-    'temperature': temperature,
-  });
-  return Map<String, dynamic>.from(result.data);
+  try {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      throw Exception("Vous devez être connecté pour utiliser l'IA.");
+    }
+
+    final callable = FirebaseFunctions.instance.httpsCallable('generateQuiz');
+    final result = await callable.call({
+      'systemMessage': systemMessage,
+      'prompt': prompt,
+      'temperature': temperature,
+      'imageRequested': imageRequested,
+    });
+
+    if (result.data == null) {
+      throw Exception("Le serveur n'a renvoyé aucune donnée.");
+    }
+
+    return Map<String, dynamic>.from(result.data as Map);
+  } on FirebaseFunctionsException catch (e) {
+    if (e.message != null && e.message!.contains('401')) {
+      throw Exception(
+        'Clé API SiliconFlow non autorisée (401). Vérifiez DEEPSEEK_API_KEY.',
+      );
+    }
+    throw Exception(e.message ?? 'Erreur du serveur [${e.code}]');
+  } catch (e) {
+    final msg = e.toString().replaceAll('Exception: ', '');
+    throw Exception(msg);
+  }
+}
+
+Future<String?> extractThemeFromQuizText(String quizText) async {
+  try {
+    final data = await callSecureAI(
+      systemMessage:
+          'Extrais le thème principal du texte. Réponds UNIQUEMENT avec un objet JSON strict au format {"theme": "NomDuTheme"}. Utilise un thème général et court (1-3 mots max, ex: "Histoire", "Sciences", "Animaux"). Ne fais aucune phrase.',
+      prompt: quizText,
+    );
+
+    if (data['choices'] != null && (data['choices'] as List).isNotEmpty) {
+      String content =
+          data['choices'][0]['message']['content']?.toString().trim() ?? '';
+      content = content.replaceAll(RegExp(r'```json\s*|```'), '');
+
+      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(content);
+      if (jsonMatch != null) {
+        final decoded = jsonDecode(jsonMatch.group(0)!);
+        return decoded['theme']?.toString().trim() ?? 'Général';
+      }
+    }
+    return 'Général';
+  } catch (e) {
+    print('Erreur lors de l\'extraction du thème : $e');
+    return 'Général';
+  }
 }
 
 class AppColors {
@@ -243,7 +292,7 @@ class GameResultsPage extends StatelessWidget {
         quizId = roomDoc.data()?['quizId'];
       }
     } catch (e) {
-      print("Impossible de rÃ©cupÃ©rer le quizId : $e");
+      print("Impossible de récupérer le quizId : $e");
     }
 
     double averageDifficulty = 5.0;
@@ -265,7 +314,7 @@ class GameResultsPage extends StatelessWidget {
     if (roomDoc != null && roomDoc.exists && roomDoc.data()?['theme'] != null) {
       theme = roomDoc.data()!['theme'];
     } else if (quizText != null) {
-      theme = await _extractThemeFromText(quizText!) ?? "Inconnu";
+      theme = await extractThemeFromQuizText(quizText!) ?? "Inconnu";
     }
 
     try {
@@ -293,7 +342,7 @@ class GameResultsPage extends StatelessWidget {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Vous avez dÃ©jÃ  gagnÃ© ce quiz. Aucun point ajoutÃ©.',
+                'Vous avez déjà gagné ce quiz. Aucun point ajouté.',
               ),
               backgroundColor: Colors.orange,
             ),
@@ -302,7 +351,7 @@ class GameResultsPage extends StatelessWidget {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
-                'FÃ©licitations ! Vous avez gagnÃ© $pointsAdded points !',
+                'Félicitations ! Vous avez gagné $pointsAdded points !',
               ),
               backgroundColor: Colors.green,
             ),
@@ -310,32 +359,7 @@ class GameResultsPage extends StatelessWidget {
         }
       }
     } catch (e) {
-      print("Erreur lors de la soumission du rÃ©sultat : $e");
-    }
-  }
-
-  Future<String?> _extractThemeFromText(String quizText) async {
-    try {
-      final data = await callSecureAI(
-        model: 'mistralai/Mistral-Nemo-Instruct-2407',
-        systemMessage:
-            'Extrais le thÃ¨me principal du texte. RÃ©ponds UNIQUEMENT avec un objet JSON strict au format {"theme": "NomDuTheme"}. Utilise un thÃ¨me gÃ©nÃ©ral et court (1-3 mots max, ex: "Histoire", "Sciences", "Animaux"). Ne fais aucune phrase.',
-        prompt: quizText,
-      );
-
-      String content =
-          data['choices'][0]['message']['content'].toString().trim();
-      content = content.replaceAll(RegExp(r'```json\s*|```'), '');
-
-      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(content);
-      if (jsonMatch != null) {
-        final decoded = jsonDecode(jsonMatch.group(0)!);
-        return decoded['theme']?.toString().trim() ?? 'GÃ©nÃ©ral';
-      }
-      return 'GÃ©nÃ©ral';
-    } catch (e) {
-      print('Erreur lors de l\'extraction du thÃ¨me : $e');
-      return 'GÃ©nÃ©ral';
+      print("Erreur lors de la soumission du résultat : $e");
     }
   }
 
@@ -384,7 +408,7 @@ class GameResultsPage extends StatelessWidget {
                         ),
                         child: Center(
                           child: Text(
-                            '${rankIndex + 1} â€¢ ${player.value} pts',
+                            '${rankIndex + 1} • ${player.value} pts',
                             textAlign: TextAlign.center,
                             style: const TextStyle(fontWeight: FontWeight.bold),
                           ),
@@ -705,6 +729,35 @@ class ThemeProvider extends ChangeNotifier {
   }
 }
 
+class LocaleProvider extends ChangeNotifier {
+  String _locale = 'fr'; // Par défaut
+  String get locale => _locale;
+
+  Future<void> init() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.containsKey('app_lang')) {
+      _locale = prefs.getString('app_lang')!;
+    } else {
+      try {
+        final sysLang =
+            WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+        _locale = ['fr', 'en', 'es'].contains(sysLang) ? sysLang : 'en';
+      } catch (e) {
+        _locale = 'fr';
+      }
+      await prefs.setString('app_lang', _locale);
+    }
+    notifyListeners();
+  }
+
+  Future<void> setLocale(String lang) async {
+    _locale = lang;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('app_lang', lang);
+  }
+}
+
 // â”€â”€â”€ THEME HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 ThemeData _buildLightTheme() {
   const seedColor = AppColors.primaryBlue;
@@ -820,7 +873,7 @@ void main() async {
     await Firebase.initializeApp(
       options: DefaultFirebaseOptions.currentPlatform,
     );
-    print("Firebase initialisÃ© avec succÃ¨s");
+    print("Firebase initialisé avec succès");
   } catch (e) {
     print("Erreur lors de l'initialisation de Firebase: $e");
   }
@@ -832,12 +885,11 @@ class MiniGamesApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) {
-        final p = ThemeProvider();
-        p.init();
-        return p;
-      },
+    return MultiProvider(
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
+        ChangeNotifierProvider(create: (_) => LocaleProvider()..init()),
+      ],
       child: Consumer<ThemeProvider>(
         builder: (context, themeProvider, _) {
           return MaterialApp(
@@ -924,6 +976,7 @@ class _AuthPageState extends State<AuthPage> {
               'email': _emailController.text.trim(),
               'score': 0,
               'iq': 100,
+              'country': 'Monde',
               'isVip': false,
               'createdAt': FieldValue.serverTimestamp(),
               'monthlyGenerationsCount': 0,
@@ -1001,7 +1054,7 @@ class _AuthPageState extends State<AuthPage> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    _isLogin ? 'Bienvenue !' : 'CrÃ©ez votre compte',
+                    _isLogin ? 'Bienvenue !' : 'Créez votre compte',
                     style: TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
@@ -1072,7 +1125,7 @@ class _AuthPageState extends State<AuthPage> {
                     child: Text(
                       _isLogin
                           ? 'Pas encore de compte ? S\'inscrire'
-                          : 'DÃ©jÃ  un compte ? Se connecter',
+                          : 'Déjà un compte ? Se connecter',
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1081,14 +1134,14 @@ class _AuthPageState extends State<AuthPage> {
                     width: double.infinity,
                     child: OutlinedButton.icon(
                       onPressed: () {
-                        Navigator.of(context).pushReplacement(
+                        Navigator.of(context).push(
                           MaterialPageRoute(
                             builder: (context) => const HomePage(isGuest: true),
                           ),
                         );
                       },
                       icon: const Icon(Icons.gamepad),
-                      label: const Text('Continuer en tant qu\'invitÃ©'),
+                      label: const Text('Rejoindre avec un code'),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: cs.primary,
                         side: BorderSide(color: cs.primary),
@@ -1128,39 +1181,64 @@ enum MemoryDisplayMode { wordToDefinition, definitionToImage, imagePair }
 class _HomePageState extends State<HomePage> {
   final _textController = TextEditingController();
   final _nameController = TextEditingController();
+
+  // NOUVEAU : Variables pour l'édition IA d'un quiz existant
+  Map<String, dynamic>? _quizToComplete;
+  bool _modifyExistingGames = false;
+  bool _aiDecideGames =
+      false; // Permet à l'IA de choisir automatiquement les jeux
+
+  void _startCompletingQuiz(Map<String, dynamic> quiz) {
+    setState(() {
+      _quizToComplete = quiz;
+      _currentTabIndex = 0; // Redirige vers l'onglet "Créer"
+      if (_textController.text.trim().isEmpty) {
+        _textController.text = quiz['quizText'] ?? '';
+      }
+      _modifyExistingGames = false; // Par défaut, on ajoute juste à la suite
+    });
+  }
+
+  void _cancelCompletingQuiz() {
+    setState(() {
+      _quizToComplete = null;
+      _modifyExistingGames = false;
+    });
+  }
+
   final Map<String, bool> _selectedGames = {
     'Vrai ou Faux': false,
     'QCM': true,
     'Choisir l\'Intrus': false,
-    'Pendu amÃ©liorÃ©': false,
+    'Pendu amélioré': false,
     'Relier': false,
     'Memory': false,
-    'ComplÃ©ter la Phrase': false,
-    'Mot MystÃ¨re': false,
-    'Deux VÃ©ritÃ©s, un Mensonge': false,
-    'Chronologie MÃ©langÃ©e': false,
+    'Compléter la Phrase': false,
+    'Mot Mystère': false,
+    'Deux Vérités, un Mensonge': false,
+    'Chronologie Mélangée': false,
     'Qui suis-je ?': false,
     'Le Mot Anagramme': false,
     'Estimation': false,
     'Quiz par Indices': false,
-    'Quiz Ã‰clair': false,
+    'Quiz Éclair': false,
   };
   final Map<String, bool> _hintsEnabled = {
     'Vrai ou Faux': false,
     'QCM': false,
     'Choisir l\'Intrus': false,
-    'Pendu amÃ©liorÃ©': false,
+    'Pendu amélioré': false,
     'Relier': false,
     'Memory': false,
-    'ComplÃ©ter la Phrase': false,
-    'Mot MystÃ¨re': false,
-    'Deux VÃ©ritÃ©s, un Mensonge': false,
-    'Chronologie MÃ©langÃ©e': false,
+    'Compléter la Phrase': false,
+    'Mot Mystère': false,
+    'Deux Vérités, un Mensonge': false,
+    'Chronologie Mélangée': false,
     'Qui suis-je ?': false,
     'Le Mot Anagramme': false,
     'Estimation': false,
     'Quiz par Indices': false,
-    'Quiz Ã‰clair': false,
+    'Quiz Éclair': false,
   };
   String _status = '';
   List<dynamic> _generatedGames = [];
@@ -1176,16 +1254,27 @@ class _HomePageState extends State<HomePage> {
   int _monthlyGenerationsCount = 0;
   int _dailyGenerationsCount = 0;
   int _dailyImageGenerationsCount = 0;
+  String _imageSource = 'pixabay';
+  int _dailyAiImageCount = 0;
+  int _dailyPixabayCount = 0;
+  bool _isGenerating = false;
 
   DisplayMode _qcmQuestionMode = DisplayMode.text;
   DisplayMode _qcmAnswerMode = DisplayMode.textAndImage;
   MatchDisplayMode _matchDisplayMode = MatchDisplayMode.definitionToWord;
   MemoryDisplayMode _memoryDisplayMode = MemoryDisplayMode.wordToDefinition;
 
+  bool _globalTimerEnabled = false;
+  bool _aiCustomTimers = false;
+
   @override
   void initState() {
     super.initState();
     _currentUser = FirebaseAuth.instance.currentUser;
+    if (widget.isGuest) {
+      _currentTabIndex =
+          0; // <--- CORRIGÉ : 0 = la page pour rejoindre en ligne
+    }
     _loadUserData();
   }
 
@@ -1200,8 +1289,8 @@ class _HomePageState extends State<HomePage> {
     if (widget.isGuest) {
       if (mounted) {
         setState(() {
-          if (_savedName.isEmpty || _savedName == 'InvitÃ©') {
-            _savedName = 'InvitÃ©_${Random().nextInt(1000)}';
+          if (_savedName.isEmpty || _savedName == 'Invité') {
+            _savedName = 'Invité_${Random().nextInt(1000)}';
           }
           _nameController.text = _savedName;
           _score = 0;
@@ -1210,6 +1299,8 @@ class _HomePageState extends State<HomePage> {
           _monthlyGenerationsCount = 0;
           _dailyGenerationsCount = 0;
           _dailyImageGenerationsCount = 0;
+          _dailyAiImageCount = 0;
+          _dailyPixabayCount = 0;
         });
       }
       return;
@@ -1245,6 +1336,8 @@ class _HomePageState extends State<HomePage> {
             _dailyGenerationsCount = data['dailyGenerationsCount'] ?? 0;
             _dailyImageGenerationsCount =
                 data['dailyImageGenerationsCount'] ?? 0;
+            _dailyAiImageCount = data['dailyAiImageCount'] ?? 0;
+            _dailyPixabayCount = data['dailyPixabayCount'] ?? 0;
 
             _checkAndResetGenerationCounts(data);
 
@@ -1255,7 +1348,7 @@ class _HomePageState extends State<HomePage> {
           });
         }
       } catch (e) {
-        print('Erreur lors du chargement des donnÃ©es utilisateur: $e');
+        print('Erreur lors du chargement des données utilisateur: $e');
         if (mounted) {
           setState(() {
             _status = 'Erreur lors du chargement du score.';
@@ -1297,19 +1390,23 @@ class _HomePageState extends State<HomePage> {
       await userRef.update({
         'dailyGenerationsCount': 0,
         'dailyImageGenerationsCount': 0,
+        'dailyAiImageCount': 0,
+        'dailyPixabayCount': 0,
         'lastDailyReset': FieldValue.serverTimestamp(),
       });
       if (mounted) {
         setState(() {
           _dailyGenerationsCount = 0;
           _dailyImageGenerationsCount = 0;
+          _dailyAiImageCount = 0;
+          _dailyPixabayCount = 0;
         });
       }
     }
   }
 
   Future<void> _updateAndReloadScoreAndHistory(
-    int points,
+    double points,
     String quizText,
     List<dynamic> gamesPlayed,
     String? quizId,
@@ -1340,7 +1437,28 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (_) {}
     }
-    theme ??= await _extractThemeFromText(quizText);
+    theme ??= await extractThemeFromQuizText(quizText);
+    double totalPossibleScore = 0;
+    if (gamesPlayed != null && gamesPlayed!.isNotEmpty) {
+      for (var game in gamesPlayed!) {
+        if (game is Map) {
+          final type = game['type']?.toString() ?? '';
+          if (type.contains('Relier')) {
+            totalPossibleScore +=
+                (game['pairs'] as List?)?.length ??
+                (game['options'] as List?)?.length ??
+                4;
+          } else if (type.contains('Quiz par Indices')) {
+            totalPossibleScore += (game['clues'] as List?)?.length ?? 3;
+          } else if (type.contains('Estimation')) {
+            totalPossibleScore += 2;
+          } else {
+            totalPossibleScore += 1;
+          }
+        }
+      }
+    }
+
     try {
       final callable = FirebaseFunctions.instance.httpsCallable(
         'submitGameResult',
@@ -1350,6 +1468,7 @@ class _HomePageState extends State<HomePage> {
         'quizId': quizId,
         'gamesPlayed': gamesPlayed,
         'pointsScored': points,
+        'totalPossibleScore': totalPossibleScore,
         'averageDifficulty': averageDifficulty,
         'quizText': quizText,
         'theme': theme,
@@ -1362,42 +1481,17 @@ class _HomePageState extends State<HomePage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Vous avez dÃ©jÃ  terminÃ© ce quiz. Aucun point n\'a Ã©tÃ© ajoutÃ©.',
+              'Vous avez déjà terminé ce quiz. Aucun point n\'a été ajouté.',
             ),
             backgroundColor: Colors.orange,
           ),
         );
       }
     } catch (e) {
-      print("Erreur lors de la mise Ã  jour du QI et du score: $e");
+      print("Erreur lors de la mise à jour du QI et du score: $e");
     }
 
     _loadUserData();
-  }
-
-  Future<String?> _extractThemeFromText(String quizText) async {
-    try {
-      final data = await callSecureAI(
-        model: 'mistralai/Mistral-Nemo-Instruct-2407',
-        systemMessage:
-            'Extrais le thÃ¨me principal du texte. RÃ©ponds UNIQUEMENT avec un objet JSON strict au format {"theme": "NomDuTheme"}. Utilise un thÃ¨me gÃ©nÃ©ral et court (1-3 mots max, ex: "Histoire", "Sciences", "Animaux"). Ne fais aucune phrase.',
-        prompt: quizText,
-      );
-
-      String content =
-          data['choices'][0]['message']['content'].toString().trim();
-      content = content.replaceAll(RegExp(r'```json\s*|```'), '');
-
-      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(content);
-      if (jsonMatch != null) {
-        final decoded = jsonDecode(jsonMatch.group(0)!);
-        return decoded['theme']?.toString().trim() ?? 'GÃ©nÃ©ral';
-      }
-      return 'GÃ©nÃ©ral';
-    } catch (e) {
-      print('Erreur lors de l\'extraction du thÃ¨me : $e');
-      return 'GÃ©nÃ©ral';
-    }
   }
 
   Future<String?> _saveQuizToFirestore(
@@ -1414,7 +1508,7 @@ class _HomePageState extends State<HomePage> {
       return null;
     }
     try {
-      final theme = await _extractThemeFromText(text);
+      final theme = await extractThemeFromQuizText(text);
       final quizRef = FirebaseFirestore.instance.collection('quizzes').doc();
       await quizRef.set({
         'quizId': quizRef.id,
@@ -1428,7 +1522,7 @@ class _HomePageState extends State<HomePage> {
       });
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Quiz sauvegardÃ© !')));
+      ).showSnackBar(const SnackBar(content: Text('Quiz sauvegardé !')));
       return quizRef.id;
     } catch (e) {
       setState(() {
@@ -1439,48 +1533,24 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // CORRECTION: Ajout de cette fonction pour incrÃ©menter le compteur de gÃ©nÃ©ration
-  Future<void> _incrementGenerationCount() async {
-    if (widget.isGuest || _currentUser == null) return;
-
-    final userRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(_currentUser!.uid);
-    Map<String, dynamic> updates = {};
-
-    bool imageRequested = false;
-    if (_selectedGames['QCM']!) {
-      if (_qcmQuestionMode != DisplayMode.text ||
-          _qcmAnswerMode != DisplayMode.text)
-        imageRequested = true;
-    }
-    if (_selectedGames['Relier']!) {
-      if (_matchDisplayMode == MatchDisplayMode.imageToDefinition)
-        imageRequested = true;
-    }
-    if (_selectedGames['Memory']!) {
-      if (_memoryDisplayMode != MemoryDisplayMode.wordToDefinition)
-        imageRequested = true;
-    }
-
-    if (_isVip && imageRequested) {
-      updates['dailyImageGenerationsCount'] = FieldValue.increment(1);
-    }
-
-    if (updates.isEmpty) return;
-
-    await userRef.update(updates);
-    await _loadUserData(); // Recharger les donnÃ©es pour mettre Ã  jour l'interface
-  }
-
   Future<void> _generateGames() async {
+    if (_isGenerating) return;
+
+    // Vérification préalable de l'authentification
+    if (widget.isGuest || FirebaseAuth.instance.currentUser == null) {
+      setState(() {
+        _status = 'Veuillez vous connecter pour générer des quiz avec l\'IA.';
+      });
+      return;
+    }
+
     final text = _textController.text.trim();
     final name = _nameController.text.trim();
     final selectedGamesList =
         _selectedGames.entries.where((entry) => entry.value).toList();
     final selectedGameNames =
         selectedGamesList
-            .map((entry) => entry.key.replaceAll(' amÃ©liorÃ©', ''))
+            .map((entry) => entry.key.replaceAll(' amélioré', ''))
             .toList();
 
     if (text.isEmpty) {
@@ -1489,32 +1559,36 @@ class _HomePageState extends State<HomePage> {
       });
       return;
     }
-    if (selectedGameNames.isEmpty) {
+    if (!_aiDecideGames && selectedGameNames.isEmpty) {
       setState(() {
-        _status = 'Veuillez sÃ©lectionner au moins un jeu.';
+        _status = 'Veuillez sélectionner au moins un jeu ou activer l\'IA.';
       });
       return;
     }
 
-    // VÃ©rification des limites de gÃ©nÃ©ration
+    // Vérification des limites de génération
     final bool canGenerate =
         _isVip
             ? (_dailyGenerationsCount < 30)
             : (_monthlyGenerationsCount < 20);
 
     bool imageRequested = false;
-    if (_selectedGames['QCM']!) {
-      if (_qcmQuestionMode != DisplayMode.text ||
-          _qcmAnswerMode != DisplayMode.text)
-        imageRequested = true;
-    }
-    if (_selectedGames['Relier']!) {
-      if (_matchDisplayMode == MatchDisplayMode.imageToDefinition)
-        imageRequested = true;
-    }
-    if (_selectedGames['Memory']!) {
-      if (_memoryDisplayMode != MemoryDisplayMode.wordToDefinition)
-        imageRequested = true;
+    if (_aiDecideGames) {
+      imageRequested = _isVip;
+    } else {
+      if (_selectedGames['QCM'] == true) {
+        if (_qcmQuestionMode != DisplayMode.text ||
+            _qcmAnswerMode != DisplayMode.text)
+          imageRequested = true;
+      }
+      if (_selectedGames['Relier'] == true) {
+        if (_matchDisplayMode == MatchDisplayMode.imageToDefinition)
+          imageRequested = true;
+      }
+      if (_selectedGames['Memory'] == true) {
+        if (_memoryDisplayMode != MemoryDisplayMode.wordToDefinition)
+          imageRequested = true;
+      }
     }
 
     final bool canGenerateImages =
@@ -1523,7 +1597,7 @@ class _HomePageState extends State<HomePage> {
     if (!canGenerate) {
       setState(() {
         _status =
-            'Vous avez atteint votre limite de gÃ©nÃ©rations. Devenez VIP ou attendez le mois prochain.';
+            'Vous avez atteint votre limite de générations. Devenez VIP ou attendez le mois prochain.';
       });
       return;
     }
@@ -1531,36 +1605,39 @@ class _HomePageState extends State<HomePage> {
     if (imageRequested && !canGenerateImages) {
       setState(() {
         _status =
-            'Vous avez atteint votre limite de gÃ©nÃ©rations d\'images (20/jour).';
+            'Vous avez atteint votre limite de générations d\'images (20/jour).';
       });
       return;
     }
 
     setState(() {
-      _status = '1/5 : GÃ©nÃ©ration de la structure du quiz...';
+      _isGenerating = true;
+      _status = '1/5 : Génération de la structure du quiz...';
     });
 
+    final bool includeAll = _aiDecideGames;
+
     String memoryInstruction = '';
-    if (_selectedGames['Memory']!) {
+    if (includeAll || (_selectedGames['Memory'] ?? false)) {
       String pairCount =
-          _aiDecidePairs ? '4 Ã  10 paires' : 'exactement $_memoryPairs paires';
+          _aiDecidePairs ? '4 à 10 paires' : 'exactement $_memoryPairs paires';
       switch (_memoryDisplayMode) {
         case MemoryDisplayMode.wordToDefinition:
           memoryInstruction =
-              '- "Memory": {"type": "Memory", "pairs": [{"word": "...", "definition": "..."}, ...], "difficulty": 1-10} (GÃ©nÃ¨re $pairCount. IMPORTANT: chaque "word" doit Ãªtre unique dans la liste, jamais deux fois le mÃªme mot)';
+              '- "Memory": {"type": "Memory", "pairs": [{"word": "...", "definition": "..."}, ...], "difficulty": 1-10} (Génère $pairCount. IMPORTANT: chaque "word" doit être unique dans la liste, jamais deux fois le même mot)';
           break;
         case MemoryDisplayMode.definitionToImage:
           memoryInstruction =
-              '- "Memory": {"type": "Memory", "displayMode": "definitionToImage", "pairs": [{"definition": "...", "image_description": "..."}, ...], "difficulty": 1-10} (GÃ©nÃ¨re $pairCount, toutes les dÃ©finitions doivent Ãªtre uniques)';
+              '- "Memory": {"type": "Memory", "displayMode": "definitionToImage", "pairs": [{"definition": "...", "image_description": "..."}, ...], "difficulty": 1-10} (Génère $pairCount, toutes les définitions doivent être uniques)';
           break;
         case MemoryDisplayMode.imagePair:
           memoryInstruction =
-              '- "Memory": {"type": "Memory", "displayMode": "imagePair", "items": [{"image_description": "...", "text_label": "..."}, ...], "difficulty": 1-10} (GÃ©nÃ¨re $pairCount, un item par paire, tous les text_label doivent Ãªtre uniques)';
+              '- "Memory": {"type": "Memory", "displayMode": "imagePair", "items": [{"image_description": "...", "text_label": "..."}, ...], "difficulty": 1-10} (Génère $pairCount, un item par paire, tous les text_label doivent être uniques)';
           break;
       }
     }
     String matchInstruction = '';
-    if (_selectedGames['Relier']!) {
+    if (includeAll || (_selectedGames['Relier'] ?? false)) {
       switch (_matchDisplayMode) {
         case MatchDisplayMode.definitionToWord:
           matchInstruction =
@@ -1573,7 +1650,7 @@ class _HomePageState extends State<HomePage> {
       }
     }
     String qcmInstruction = '';
-    if (_selectedGames['QCM']!) {
+    if (includeAll || (_selectedGames['QCM'] ?? false)) {
       String questionStructure;
       switch (_qcmQuestionMode) {
         case DisplayMode.text:
@@ -1599,92 +1676,155 @@ class _HomePageState extends State<HomePage> {
           break;
       }
       qcmInstruction =
-          '- "QCM": {"type": "QCM", "question": {$questionStructure}, "options": [{$optionStructure}, {$optionStructure}, {$optionStructure}, {$optionStructure}], "correct": "texte identique au champ text de la bonne option", "hint": "Indice pour trouver la rÃ©ponse sans la donner", "difficulty": 1-10} // IMPORTANT: correct doit etre le texte IDENTIQUE a l\'une des options, jamais un nombre ou un index numerique';
+          '- "QCM": {"type": "QCM", "question": {$questionStructure}, "options": [{$optionStructure}, {$optionStructure}, {$optionStructure}, {$optionStructure}], "correct": "texte identique au champ text de la bonne option", "hint": "Indice pour trouver la réponse sans la donner", "difficulty": 1-10} // IMPORTANT: Le champ image_description doit OBLIGATOIREMENT contenir 1 à 3 mots-clés visuels clairs en français pour illustrer la réponse (ex: "loup gris dans la neige"). Ne le laisse JAMAIS vide.';
     }
 
+    final String allowedTypesText =
+        _aiDecideGames
+            ? "Choisis librement et avec variété parmi TOUS les types de jeux disponibles (QCM, Vrai ou Faux, Choisir l'Intrus, Deux Vérités une Erreur, Pendu, Relier, Memory, Mot Mystère, Estimation, Quiz par Indices, Chronologie)."
+            : selectedGameNames.join(', ');
+
     try {
-      final systemPromptContent = '''
-Tu es un expert en crÃ©ation de jeux qui transforme un texte en un ensemble de mini-jeux.
-Tu dois retourner UNIQUEMENT un tableau JSON valide, sans AUCUN texte avant ou aprÃ¨s le JSON. Aucune explication, aucun commentaire.
+      String systemPromptContent = '''
+Tu es un expert en création de quiz éducatifs. 
+Ta mission est de transformer le texte fourni en un QUIZ composé de plusieurs QUESTIONS/ÉPREUVES.
+Tu dois retourner UNIQUEMENT un tableau JSON valide, sans AUCUN texte avant ou après le JSON. Aucune explication, aucun commentaire.
 
-Les jeux demandÃ©s sont : ${selectedGameNames.join(', ')}.
+Types de jeux autorisés pour les questions : $allowedTypesText.
 
-IMPORTANT: GÃ©nÃ¨re des jeux basÃ©s UNIQUEMENT sur le texte fourni par l'utilisateur. Ne gÃ©nÃ¨re JAMAIS de questions sur les jeux eux-mÃªmes. Base-toi exclusivement sur le contenu du texte.
+RÈGLE DE STRUCTURE ET VOCABULAIRE :
+- Un QUIZ contient plusieurs QUESTIONS (ou ÉPREUVES).
+- Chaque question/épreuve utilise l'un des types de jeux sélectionnés (ex: 3 questions de type QCM, 2 questions de type Vrai/Faux, 1 épreuve de type Memory).
+- Ne confonds pas "un jeu" et "une question" : une question QCM est UNE épreuve du quiz, un plateau Memory est UNE épreuve du quiz.
+- Si le texte est riche, génère plusieurs questions pour chaque type de jeu sélectionné (ex: 3 à 5 questions QCM, 2 à 3 questions Vrai/Faux, etc.).
+- Si l'utilisateur demande "5 questions", génère exactement 5 questions au total réparties sur les types choisis.
 
-RÃˆGLE DE QUANTITÃ‰ OBLIGATOIRE :
-- Tu DOIS gÃ©nÃ©rer au moins 1 jeu de CHAQUE type demandÃ©, sans jamais en omettre un seul.
-- Si le texte est riche (long, factuel, encyclopÃ©dique), gÃ©nÃ¨re PLUSIEURS jeux par type : 3 Ã  5 QCM, 2 Ã  3 Vrai/Faux, 2 Chronologie, etc. Ne te limite JAMAIS Ã  1 seul par type si le contenu le permet.
-- Si l'utilisateur prÃ©cise un nombre (ex: '5 questions', '10 QCM'), respecte ce nombre EXACTEMENT pour ce type.
-- Pour "Le Mot Anagramme" et "Mot MystÃ¨re" : maximum 2-3 car c'est vite rÃ©pÃ©titif.
-- Pour "Relier" : gÃ©nÃ¨re entre 3 et 8 paires par jeu, selon la quantitÃ© de relations dans le texte.
+IMPORTANT : Base-toi UNIQUEMENT sur le texte fourni par l'utilisateur.
+''';
 
-RÃˆGLE MEMORY : Pour les jeux de type Memory, chaque paire doit avoir un 'word' UNIQUE. N'utilise jamais deux fois le mÃªme mot. GÃ©nÃ¨re des paires distinctes et variÃ©es.
+      // NOUVEAU : Injection du contexte si modification existante
+      if (_quizToComplete != null && _modifyExistingGames) {
+        systemPromptContent += '''
+\n\nATTENTION : Tu modifies actuellement un quiz existant. L'utilisateur te demande de le modifier ou de le compléter selon sa consigne.
+Voici les jeux actuels de ce quiz au format JSON :
+${jsonEncode(_quizToComplete!['games'])}
 
+Génère la NOUVELLE liste complète des jeux en conservant, modifiant, ou ajoutant des éléments selon la consigne et les types de jeux demandés. Retourne UNIQUEMENT le tableau JSON complet.
+''';
+      } else {
+        // Le reste de vos règles habituelles
+        systemPromptContent += '''
+RÈGLE DE QUANTITÉ OBLIGATOIRE :
+- Tu DOIS génère au moins 1 jeu de CHAQUE type demandé, sans jamais en omettre un seul.
+- Si le texte est riche (long, factuel, encyclopédique), génère PLUSIEURS jeux par type : 3 à 5 QCM, 2 à 3 Vrai/Faux, 2 Chronologie, etc. Ne te limite JAMAIS à 1 seul par type si le contenu le permet.
+- Si l'utilisateur précise un nombre (ex: '5 questions', '10 QCM'), respecte ce nombre EXACTEMENT pour ce type.
+- Pour "Le Mot Anagramme" et "Mot Mystère" : maximum 2-3 car c'est vite répétitif.
+- Pour "Relier" : génère entre 3 et 8 paires par jeu, selon la quantité de relations dans le texte.
+''';
+      }
+
+      // Ajout de vos règles existantes
+      systemPromptContent += '''
+RÈGLE MEMORY : Pour les jeux de type Memory, chaque paire doit avoir un 'word' UNIQUE. N'utilise jamais deux fois le même mot. Génère des paires distinctes et variées.
+${_aiCustomTimers ? '\nRÈGLE CHRONOMÈTRE (IMPORTANT) : Ajoute systématiquement un champ `"timeLimit"` (entier, en secondes) à chaque jeu généré. Adapte intelligemment ce temps à la complexité et la longueur de la question. (ex: 10 pour un QCM simple, 30 pour un Memory difficile, etc.).' : ''}
 Voici les formats JSON attendus :
 
-${_selectedGames['Vrai ou Faux']! ? '- "Vrai ou Faux": {"type": "Vrai ou Faux", "question": "...", "answer": true/false, "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['QCM']! ? qcmInstruction : ''}
-${_selectedGames['Choisir l\'Intrus']! ? '- "Choisir l\'Intrus": {"type": "Choisir l\'Intrus", "question": "...", "options": ["...", "...", "..."], "intruder": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Pendu amÃ©liorÃ©']! ? '- "Pendu": {"type": "Pendu", "word": "MOT", "hint": "Indice sur le mot", "difficulty": 1-10}' : ''}
-${_selectedGames['Relier']! ? matchInstruction : ''}
-${_selectedGames['Memory']! ? memoryInstruction : ''}
-${_selectedGames['ComplÃ©ter la Phrase']! ? '- "ComplÃ©ter la Phrase": {"type": "ComplÃ©ter la Phrase", "question": "Le chat est un ___.", "correct": "animal", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Deux VÃ©ritÃ©s, un Mensonge']! ? '- "Deux VÃ©ritÃ©s, un Mensonge": {"type": "Deux VÃ©ritÃ©s, un Mensonge", "statements": [...], "lie": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Chronologie MÃ©langÃ©e']! ? '- "Chronologie MÃ©langÃ©e": {"type": "Chronologie MÃ©langÃ©e", "question": "...", "events": [...], "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Qui suis-je ?']! ? '- "Qui suis-je ?": {"type": "Qui suis-je ?", "riddle": "...", "answer": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Le Mot Anagramme']! ? '- "Le Mot Anagramme": {"type": "Le Mot Anagramme", "anagram": "...", "hint": "...", "solution": "...", "difficulty": 1-10}' : ''}
-${_selectedGames['Mot MystÃ¨re']! ? '- "Mot MystÃ¨re": {"type": "Mot MystÃ¨re", "word": "MOTSECRET", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
-${_selectedGames['Estimation']! ? '- "Estimation": {"type": "Estimation", "question": "...", "answer": 1969, "unit": "annÃ©e", "hint": "Indice optionnel", "difficulty": 1-10}' : ''}
-${_selectedGames['Quiz par Indices']! ? '- "Quiz par Indices": {"type": "Quiz par Indices", "clues": ["Indice 1", "Indice 2", "Indice 3"], "answer": "la rÃ©ponse exacte", "difficulty": 1-10}' : ''}
-${_selectedGames['Quiz Ã‰clair']! ? '- "Quiz Ã‰clair": {"type": "Quiz Ã‰clair", "question": "...", "options": ["Vrai", "Faux", "Peut-Ãªtre"], "correct": "Vrai", "difficulty": 1-10}' : ''}
+${(includeAll || (_selectedGames['Vrai ou Faux'] ?? false)) ? '- "Vrai ou Faux": {"type": "Vrai ou Faux", "question": "...", "answer": true/false, "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['QCM'] ?? false)) ? qcmInstruction : ''}
+${(includeAll || (_selectedGames['Choisir l\'Intrus'] ?? false)) ? '- "Choisir l\'Intrus": {"type": "Choisir l\'Intrus", "question": "...", "options": ["...", "...", "..."], "intruder": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Pendu amélioré'] ?? false)) ? '- "Pendu": {"type": "Pendu", "word": "MOT", "hint": "Indice sur le mot", "difficulty": 1-10}' : ''}
+${(includeAll || (_selectedGames['Relier'] ?? false)) ? matchInstruction : ''}
+${(includeAll || (_selectedGames['Memory'] ?? false)) ? memoryInstruction : ''}
+${(includeAll || (_selectedGames['Compléter la Phrase'] ?? false)) ? '- "Compléter la Phrase": {"type": "Compléter la Phrase", "question": "Le chat est un ___.", "correct": "animal", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Deux Vérités, un Mensonge'] ?? false)) ? '- "Deux Vérités, un Mensonge": {"type": "Deux Vérités, un Mensonge", "statements": [...], "lie": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Chronologie Mélangée'] ?? false)) ? '- "Chronologie Mélangée": {"type": "Chronologie Mélangée", "question": "...", "events": [...], "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Qui suis-je ?'] ?? false)) ? '- "Qui suis-je ?": {"type": "Qui suis-je ?", "riddle": "...", "answer": "...", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Le Mot Anagramme'] ?? false)) ? '- "Le Mot Anagramme": {"type": "Le Mot Anagramme", "anagram": "...", "hint": "...", "solution": "...", "difficulty": 1-10}' : ''}
+${(includeAll || (_selectedGames['Mot Mystère'] ?? false)) ? '- "Mot Mystère": {"type": "Mot Mystère", "word": "MOTSECRET", "difficulty": 1-10, "hint": "Indice optionnel"}' : ''}
+${(includeAll || (_selectedGames['Estimation'] ?? false)) ? '- "Estimation": {"type": "Estimation", "question": "...", "answer": 1969, "unit": "année", "hint": "Indice optionnel", "difficulty": 1-10}' : ''}
+${(includeAll || (_selectedGames['Quiz par Indices'] ?? false)) ? '- "Quiz par Indices": {"type": "Quiz par Indices", "clues": ["Indice 1", "Indice 2", "Indice 3"], "answer": "la réponse exacte", "difficulty": 1-10}' : ''}
+${(includeAll || (_selectedGames['Quiz Éclair'] ?? false)) ? '- "Quiz Éclair": {"type": "Quiz Éclair", "question": "...", "options": ["Vrai", "Faux", "Peut-être"], "correct": "Vrai", "difficulty": 1-10}' : ''}
 
-Assure-toi que le JSON est strictement valide.
+Assure-toi que le JSON est strictly valide.
 ''';
 
       print(
-        '''\n[API_PROMPT] --- Prompt systÃ¨me envoyÃ© Ã  l'IA --- \n$systemPromptContent\n---------------------------------------------\n''',
+        '''\n[API_PROMPT] --- Prompt système envoyé à l'IA --- \n$systemPromptContent\n---------------------------------------------\n''',
       );
+
+      bool imageRequested = false;
+      if (_aiDecideGames) {
+        imageRequested = _isVip;
+      } else {
+        if (_selectedGames['QCM'] == true) {
+          if (_qcmQuestionMode != DisplayMode.text ||
+              _qcmAnswerMode != DisplayMode.text) {
+            imageRequested = true;
+          }
+        }
+        if (_selectedGames['Relier'] == true) {
+          if (_matchDisplayMode == MatchDisplayMode.imageToDefinition) {
+            imageRequested = true;
+          }
+        }
+        if (_selectedGames['Memory'] == true) {
+          if (_memoryDisplayMode != MemoryDisplayMode.wordToDefinition) {
+            imageRequested = true;
+          }
+        }
+      }
 
       final data = await callSecureAI(
         model: 'mistralai/Mistral-Nemo-Instruct-2407',
         temperature: 0.2,
         systemMessage: systemPromptContent,
         prompt:
-            'Voici le texte Ã  transformer en jeux : "$text"\n\nRappel: retourne UNIQUEMENT le tableau JSON, sans aucun texte autour.',
+            'Voici le texte à transformer en jeux : "$text"\n\nRappel: retourne UNIQUEMENT le tableau JSON, sans aucun texte autour.',
+        imageRequested: imageRequested,
       );
 
-      // Bonne pratique : on vÃ©rifie que la rÃ©ponse est bien formatÃ©e
       if (data.isNotEmpty &&
           data['choices'] != null &&
-          data['choices'].isNotEmpty) {
-        print("[API_RESPONSE] SuccÃ¨s !");
-        final rawContent = data['choices'][0]['message']['content'];
-        print("[AI RAW RESPONSE] Contenu brut reÃ§u de l'IA:\n$rawContent");
+          (data['choices'] as List).isNotEmpty) {
+        print("[API_RESPONSE] Succès !");
+        final rawContent =
+            data['choices'][0]['message']['content']?.toString() ?? '';
+
+        if (rawContent.isEmpty) {
+          throw Exception("L'IA a renvoyé une réponse vide.");
+        }
+        print("[AI RAW RESPONSE] Contenu brut reçu de l'IA:\n$rawContent");
 
         final cleanedContent = rawContent.trim().replaceAll(
           RegExp(r'```json\s*|```'),
           '',
         );
 
-        // Extract JSON array using regex to handle surrounding text
-        final jsonMatch = RegExp(
-          r'(\[[\s\S]*\]|\{[\s\S]*\})',
-        ).firstMatch(cleanedContent);
-        if (jsonMatch == null) {
-          throw FormatException(
-            'Aucun JSON valide trouvÃ© dans la rÃ©ponse de l\'IA',
+        String jsonSubstring = cleanedContent;
+        int firstBracket = cleanedContent.indexOf('[');
+        int lastBracket = cleanedContent.lastIndexOf(']');
+        if (firstBracket != -1 && lastBracket > firstBracket) {
+          jsonSubstring = cleanedContent.substring(
+            firstBracket,
+            lastBracket + 1,
           );
+        } else {
+          int firstBrace = cleanedContent.indexOf('{');
+          int lastBrace = cleanedContent.lastIndexOf('}');
+          if (firstBrace != -1 && lastBrace > firstBrace) {
+            jsonSubstring = cleanedContent.substring(firstBrace, lastBrace + 1);
+          }
         }
 
         dynamic decodedJson;
         try {
-          decodedJson = jsonDecode(jsonMatch.group(0)!);
+          decodedJson = jsonDecode(jsonSubstring);
         } catch (e) {
           throw Exception(
-            'L\'IA a gÃ©nÃ©rÃ© un JSON invalide (erreur de syntaxe). Veuillez rÃ©essayer.',
+            'L\'IA a généré un JSON invalide (erreur de syntaxe). Veuillez réessayer.',
           );
         }
-        print("[JSON_PARSE] La rÃ©ponse JSON a Ã©tÃ© parsÃ©e avec succÃ¨s.");
+        print("[JSON_PARSE] La réponse JSON a été parsée avec succès.");
 
         List<dynamic> gamesList;
         if (decodedJson is List) {
@@ -1697,40 +1837,96 @@ Assure-toi que le JSON est strictement valide.
         if (validatedGames.isEmpty) {
           setState(() {
             _status =
-                'Erreur: L\'IA n\'a gÃ©nÃ©rÃ© aucun jeu valide. Veuillez rÃ©essayer ou reformuler votre texte.';
+                'Erreur: L\'IA n\'a généré aucun jeu valide. Veuillez réessayer ou reformuler votre texte.';
           });
           return;
         }
         if (_isVip) {
           setState(() {
-            _status = '2/5 : Structure gÃ©nÃ©rÃ©e. Recherche des images...';
+            _status = '2/5 : Structure générée. Recherche des images...';
           });
           validatedGames = await _processImagesForGames(validatedGames);
         }
+
+        // NOUVEAU : Si on complète SANS le switch "modifier", on ajoute les nouveaux jeux à la fin
+        if (_quizToComplete != null && !_modifyExistingGames) {
+          final existingGames =
+              _quizToComplete!['games'] as List<dynamic>? ?? [];
+          validatedGames = [...existingGames, ...validatedGames];
+        }
         _generatedGames =
             validatedGames.map((game) {
-              if (game['type'] == 'Pendu') game['type'] = 'Pendu amÃ©liorÃ©';
-              // Appliquer la prÃ©fÃ©rence d'indice de l'utilisateur pour chaque type de jeu
+              if (game['type'] == 'Pendu') game['type'] = 'Pendu amélioré';
+              // Appliquer la préférence d'indice de l'utilisateur pour chaque type de jeu
               final gameType = game['type']?.toString() ?? '';
               game['hintEnabled'] = _hintsEnabled[gameType] ?? false;
+
+              // Appliquer les chronomètres
+              if (_globalTimerEnabled) {
+                if (!_aiCustomTimers || game['timeLimit'] == null) {
+                  final defaults = {
+                    'QCM': 10,
+                    'Vrai ou Faux': 8,
+                    'Choisir l\'Intrus': 10,
+                    'Pendu amélioré': 30,
+                    'Relier': 45,
+                    'Memory': 30,
+                    'Compléter la Phrase': 15,
+                    'Mot Mystère': 20,
+                    'Deux Vérités, un Mensonge': 15,
+                    'Chronologie Mélangée': 40,
+                    'Qui suis-je ?': 20,
+                    'Le Mot Anagramme': 15,
+                    'Estimation': 15,
+                    'Quiz par Indices': 30,
+                    'Quiz Éclair': 8,
+                  };
+                  game['timeLimit'] = defaults[gameType] ?? 20;
+                }
+              }
+
               return game;
             }).toList();
-        _status = 'Jeux gÃ©nÃ©rÃ©s avec succÃ¨s !';
+        _status = 'Jeux générés avec succès !';
         print(
-          "[SUCCESS] Jeux finaux validÃ©s et prÃªts Ã  jouer: $_generatedGames",
+          "[SUCCESS] Jeux finaux validés et prêts à jouer: $_generatedGames",
         );
-        final String? newQuizId = await _saveQuizToFirestore(
-          name.isNotEmpty
-              ? name
-              : (widget.isGuest
-                  ? "InvitÃ©"
-                  : (_currentUser?.displayName ?? "Anonyme")),
-          text,
-          _generatedGames,
-        );
+        String? finalQuizId;
 
-        if (newQuizId != null) {
-          await _incrementGenerationCount();
+        if (_quizToComplete != null) {
+          // Si on modifie un quiz existant, on met à jour dans la base
+          finalQuizId = _quizToComplete!['quizId'] ?? _quizToComplete!['id'];
+          await FirebaseFirestore.instance
+              .collection('quizzes')
+              .doc(finalQuizId)
+              .update({
+                'games': _generatedGames,
+                'timestamp': FieldValue.serverTimestamp(),
+              });
+          _cancelCompletingQuiz(); // On vide l'état après succès
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Quiz complété/modifié avec succès !'),
+              ),
+            );
+          }
+        } else {
+          // Sauvegarde classique d'un nouveau quiz
+          finalQuizId = await _saveQuizToFirestore(
+            name.isNotEmpty
+                ? name
+                : (widget.isGuest
+                    ? "Invité"
+                    : (_currentUser?.displayName ?? "Anonyme")),
+            text,
+            _generatedGames,
+          );
+        }
+
+        if (finalQuizId != null) {
+          // Increment is now handled in the Cloud Function
+          await _loadUserData(); // Recharger les données pour mettre à jour l'interface
         } else {
           throw Exception(
             'Erreur lors de la sauvegarde du quiz dans Firestore',
@@ -1738,27 +1934,33 @@ Assure-toi que le JSON est strictement valide.
         }
 
         setState(() {
-          _lastGeneratedQuizId = newQuizId;
+          _lastGeneratedQuizId = finalQuizId;
         });
       } else {
-        throw Exception('Erreur API: Format de rÃ©ponse invalide ou vide');
+        throw Exception('Erreur API: Format de réponse invalide ou vide');
       }
     } catch (e) {
       setState(() {
-        _status = 'Erreur lors de la gÃ©nÃ©ration : $e';
+        _status = 'Erreur lors de la génération : $e';
       });
-      print("[ERREUR] Une erreur est survenue pendant la gÃ©nÃ©ration: $e");
+      print("[ERREUR] Une erreur est survenue pendant la génération: $e");
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isGenerating = false;
+        });
+      }
     }
   }
 
   List<dynamic> _validateGeneratedGames(List<dynamic> games) {
-    print("[VALIDATION] --- DÃ©but de la validation des jeux ---");
+    print("[VALIDATION] --- Début de la validation des jeux ---");
     List<dynamic> validatedGames = [];
 
     for (var game in games) {
       if (game is! Map<String, dynamic>) {
         print(
-          "[VALIDATION] -> INVALIDE: Un Ã©lÃ©ment n'est pas un objet JSON valide. IgnorÃ©.",
+          "[VALIDATION] -> INVALIDE: Un élément n'est pas un objet JSON valide. Ignoré.",
         );
         continue;
       }
@@ -1773,7 +1975,7 @@ Assure-toi que le JSON est strictement valide.
               game['answer'] == null ||
               game['answer'] is! bool) {
             print(
-              "[VALIDATION] -> INVALIDE (Vrai ou Faux): question ou rÃ©ponse manquante ou type invalide.",
+              "[VALIDATION] -> INVALIDE (Vrai ou Faux): question ou réponse manquante ou type invalide.",
             );
             isGameValid = false;
           }
@@ -1824,30 +2026,28 @@ Assure-toi que le JSON est strictement valide.
             isGameValid = false;
           }
           break;
-        case 'ComplÃ©ter la Phrase':
+        case 'Compléter la Phrase':
           if (game['question'] == null || game['correct'] == null) {
             print(
-              "[VALIDATION] -> INVALIDE (ComplÃ©ter la Phrase): champs manquants.",
+              "[VALIDATION] -> INVALIDE (Compléter la Phrase): champs manquants.",
             );
             isGameValid = false;
           }
           break;
-        case 'Deux VÃ©ritÃ©s, un Mensonge':
+        case 'Deux Vérités, un Mensonge':
           final statements = game['statements'];
           if (statements == null ||
               (statements is List && statements.length < 3) ||
               game['lie'] == null) {
-            print(
-              "[VALIDATION] -> INVALIDE (Deux VÃ©ritÃ©s): champs manquants.",
-            );
+            print("[VALIDATION] -> INVALIDE (Deux Vérités): champs manquants.");
             isGameValid = false;
           }
           break;
-        case 'Chronologie MÃ©langÃ©e':
+        case 'Chronologie Mélangée':
           final events = game['events'];
           if (events == null || (events is List && events.length < 3)) {
             print(
-              "[VALIDATION] -> INVALIDE (Chronologie): Ã©vÃ©nements insuffisants.",
+              "[VALIDATION] -> INVALIDE (Chronologie): événements insuffisants.",
             );
             isGameValid = false;
           }
@@ -1866,11 +2066,11 @@ Assure-toi que le JSON est strictement valide.
             isGameValid = false;
           }
           break;
-        case 'Mot MystÃ¨re':
+        case 'Mot Mystère':
           final word = game['word'] as String?;
           if (word == null || word.isEmpty || word.length < 4) {
             print(
-              "[VALIDATION] -> INVALIDE (Mot MystÃ¨re): Le mot est manquant ou trop court.",
+              "[VALIDATION] -> INVALIDE (Mot Mystère): Le mot est manquant ou trop court.",
             );
             isGameValid = false;
           }
@@ -1895,13 +2095,14 @@ Assure-toi que le JSON est strictement valide.
             isGameValid = false;
           }
           break;
-        case 'Quiz Ã‰clair':
-          final options = game['options'];
+        case 'Quiz Éclair':
+          final options = game['options'] ?? game['choices'];
+          final correct = game['correct'] ?? game['answer'];
           if (game['question'] == null ||
               options == null ||
               (options is List && options.length < 2) ||
-              game['correct'] == null) {
-            print("[VALIDATION] -> INVALIDE (Quiz Ã‰clair): champs manquants.");
+              correct == null) {
+            print("[VALIDATION] -> INVALIDE (Quiz Éclair): champs manquants.");
             isGameValid = false;
           }
           break;
@@ -1911,12 +2112,12 @@ Assure-toi que le JSON est strictement valide.
       }
 
       if (isGameValid) {
-        // Assurer qu'un champ difficulty existe (dÃ©faut 5)
+        // Assurer qu'un champ difficulty existe (défaut 5)
         if (game['difficulty'] == null) game['difficulty'] = 5;
         validatedGames.add(game);
-        print("[VALIDATION] --- Jeu '$type' jugÃ© VALIDE. ---");
+        print("[VALIDATION] --- Jeu '$type' jugé VALIDE. ---");
       } else {
-        print("[VALIDATION] --- Jeu '$type' jugÃ© INVALIDE et ignorÃ©. ---");
+        print("[VALIDATION] --- Jeu '$type' jugé INVALIDE et ignoré. ---");
       }
     }
     return validatedGames;
@@ -1953,11 +2154,9 @@ Assure-toi que le JSON est strictement valide.
     }
 
     if (itemsToProcess.isNotEmpty) {
-      print(
-        '>>> Total d\'images Ã  traiter trouvÃ© : ${itemsToProcess.length}',
-      );
+      print('>>> Total d\'images à traiter trouvé : ${itemsToProcess.length}');
 
-      // Traiter par lots de 3 pour Ã©viter le timeout
+      // Traiter par lots de 3 pour éviter le timeout
       const int chunkSize = 3;
       for (int i = 0; i < itemsToProcess.length; i += chunkSize) {
         if (!mounted) return games;
@@ -1982,7 +2181,7 @@ Assure-toi que le JSON est strictement valide.
       }
     } else {
       print(
-        '>>> Aucune "image_description" trouvÃ©e. Traitement des images sautÃ©.',
+        '>>> Aucune "image_description" trouvée. Traitement des images sauté.',
       );
     }
     return games;
@@ -1992,43 +2191,43 @@ Assure-toi que le JSON est strictement valide.
     Map<dynamic, dynamic> item,
     String key,
   ) async {
-    final description = item[key];
-    if (description == null || description.isEmpty) return;
-
-    print('\n--- DÃ©but recherche Pixabay pour: "$description" ---');
-
-    // Met Ã  jour l'interface utilisateur
-    if (mounted) {
-      setState(() {
-        _status = 'Recherche d\'une image pour "$description"...';
-      });
+    String description = item[key]?.toString().trim() ?? '';
+    if (description.isEmpty && item['text'] != null) {
+      description = item['text'].toString().trim();
     }
+    if (description.isEmpty) return;
 
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable(
-        'fetchPixabayImage',
-      );
-      final result = await callable.call({'query': description});
-
-      final data = Map<String, dynamic>.from(result.data);
-
-      // On vÃ©rifie s'il y a des rÃ©sultats (appelÃ©s "hits" chez Pixabay)
-      if (data['hits'] != null && (data['hits'] as List).isNotEmpty) {
-        // webformatURL renvoie une image compressÃ©e parfaite pour mobile (max 640px)
-        final imageUrl = data['hits'][0]['webformatURL'];
-        item['image_url'] = imageUrl; // On injecte l'URL dans le jeu
-
-        print('   [SUCCÃˆS] Image trouvÃ©e: $imageUrl');
-      } else {
-        print(
-          '   [Ã‰CHEC] Aucune image trouvÃ©e sur Pixabay pour "$description".',
+      if (_isVip && _imageSource == 'ai') {
+        // Génération par IA (VIP Uniquement)
+        if (mounted)
+          setState(
+            () => _status = 'Génération d\'image IA pour "$description"...',
+          );
+        final callable = FirebaseFunctions.instance.httpsCallable(
+          'generateAIImage',
         );
+        final result = await callable.call({'prompt': description});
+        if (result.data != null && result.data['url'] != null) {
+          item['image_url'] = result.data['url'];
+        }
+      } else {
+        // Recherche Pixabay (VIP illimité / Non-VIP 300 par jour)
+        if (mounted)
+          setState(() => _status = 'Recherche Pixabay pour "$description"...');
+        final callable = FirebaseFunctions.instance.httpsCallable(
+          'fetchPixabayImage',
+        );
+        final result = await callable.call({'query': description});
+        if (result.data != null &&
+            result.data['hits'] != null &&
+            (result.data['hits'] as List).isNotEmpty) {
+          item['image_url'] = result.data['hits'][0]['webformatURL'];
+        }
       }
     } catch (e) {
-      print('   [Ã‰CHEC] Erreur rÃ©seau : $e');
+      print('Erreur génération/recherche d\'image : $e');
     }
-
-    print('--- Fin du processus pour: "$description" ---\n');
   }
 
   void _playQuiz(List<dynamic> games, String quizText, String? quizId) {
@@ -2038,7 +2237,7 @@ Assure-toi que le JSON est strictement valide.
         builder:
             (context) => GamePage(
               games: games,
-              onScoreUpdate: (int points) {
+              onScoreUpdate: (double points) {
                 _updateAndReloadScoreAndHistory(
                   points,
                   quizText,
@@ -2064,6 +2263,7 @@ Assure-toi que le JSON est strictement valide.
             (context) => AllQuizzesPage(
               onPlay: (games, text, quizId) => _playQuiz(games, text, quizId),
               isGuest: widget.isGuest,
+              onCompleteAI: _startCompletingQuiz,
             ),
       ),
     );
@@ -2081,14 +2281,14 @@ Assure-toi que le JSON est strictement valide.
         return StatefulBuilder(
           builder: (context, setState) {
             return AlertDialog(
-              title: const Text('Entrez votre prÃ©nom'),
+              title: const Text('Entrez votre prénom'),
               content: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   TextField(
                     controller: dialogNameController,
                     decoration: InputDecoration(
-                      labelText: 'PrÃ©nom',
+                      labelText: 'Prénom',
                       border: const OutlineInputBorder(),
                       errorText: errorMessage,
                     ),
@@ -2096,7 +2296,7 @@ Assure-toi que le JSON est strictement valide.
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Ce prÃ©nom sera visible par les autres joueurs.',
+                    'Ce prénom sera visible par les autres joueurs.',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                 ],
@@ -2113,7 +2313,7 @@ Assure-toi que le JSON est strictement valide.
                     final name = dialogNameController.text.trim();
                     if (name.isEmpty) {
                       setState(() {
-                        errorMessage = 'Le prÃ©nom est obligatoire.';
+                        errorMessage = 'Le prénom est obligatoire.';
                       });
                     } else {
                       Navigator.of(context).pop(name);
@@ -2137,13 +2337,18 @@ Assure-toi que le JSON est strictement valide.
             (context) => OnlineOptionsPage(
               initialQuiz: initialQuiz,
               playerName: _savedName,
-              onCreateRoom: (roomSettings, selectedQuiz) {
-                _createOnlineRoom(_savedName, roomSettings, selectedQuiz);
+              onCreateRoom: (roomSettings, selectedQuiz, saveToQuiz) {
+                _createOnlineRoom(
+                  _savedName,
+                  roomSettings,
+                  selectedQuiz,
+                  saveToQuiz,
+                );
               },
               onJoinRoom: (code) {
                 _joinOnlineRoom(_savedName, code);
               },
-              // ON MET Ã€ JOUR LE CALLBACK DE RECHERCHE
+              // ON MET À JOUR LE CALLBACK DE RECHERCHE
               onFindPublicGame: (String? theme) async {
                 return await _findPublicGame(_savedName, theme: theme);
               },
@@ -2159,6 +2364,7 @@ Assure-toi que le JSON est strictement valide.
     String playerName,
     OnlineRoomSettings settings,
     Map<String, dynamic>? selectedQuiz,
+    bool saveToQuiz,
   ) async {
     if (settings.isPublic && selectedQuiz != null) {
       try {
@@ -2184,14 +2390,14 @@ Assure-toi que le JSON est strictement valide.
             context: context,
             builder:
                 (context) => AlertDialog(
-                  title: const Text('Partie similaire trouvÃ©e !'),
+                  title: const Text('Partie similaire trouvée !'),
                   content: const Text(
-                    'Une partie publique avec le mÃªme quiz est dÃ©jÃ  disponible. Voulez-vous la rejoindre ?',
+                    'Une partie publique avec le même quiz est déjà disponible. Voulez-vous la rejoindre ?',
                   ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(false),
-                      child: const Text('Non, crÃ©er la mienne'),
+                      child: const Text('Non, créer la mienne'),
                     ),
                     ElevatedButton(
                       onPressed: () => Navigator.of(context).pop(true),
@@ -2207,17 +2413,18 @@ Assure-toi que le JSON est strictement valide.
           }
         }
       } catch (e) {
-        print("Erreur lors de la vÃ©rification de salles similaires : $e");
+        print("Erreur lors de la vérification de salles similaires : $e");
       }
     }
 
-    _executeCreateOnlineRoom(playerName, settings, selectedQuiz);
+    _executeCreateOnlineRoom(playerName, settings, selectedQuiz, saveToQuiz);
   }
 
   void _executeCreateOnlineRoom(
     String playerName,
     OnlineRoomSettings settings,
     Map<String, dynamic>? selectedQuiz,
+    bool saveToQuiz,
   ) async {
     final gamesList =
         selectedQuiz != null ? selectedQuiz['games'] as List<dynamic>? : null;
@@ -2231,23 +2438,22 @@ Assure-toi que le JSON est strictement valide.
         gamesList.isEmpty ||
         quizText == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Veuillez sÃ©lectionner un quiz valide !'),
-        ),
+        const SnackBar(content: Text('Veuillez sélectionner un quiz valide !')),
       );
       return;
     }
 
-    // On vÃ©rifie une premiÃ¨re fois si le widget est montÃ©
+    // On vérifie une première fois si le widget est monté
     if (mounted) {
       setState(() {
-        _status = 'CrÃ©ation de la salle...';
+        _status = 'Création de la salle...';
       });
     }
 
     try {
       final code = _generateInviteCode();
       final games = List<dynamic>.from(gamesList);
+
       DocumentReference roomRef = await FirebaseFirestore.instance
           .collection('onlineRooms')
           .add({
@@ -2277,7 +2483,14 @@ Assure-toi que le JSON est strictement valide.
             'timestamp': FieldValue.serverTimestamp(),
           });
 
-      // LA CORRECTION PRINCIPALE EST ICI : on vÃ©rifie Ã  nouveau aprÃ¨s le "await"
+      if (saveToQuiz && selectedQuiz['quizId'] != null) {
+        await FirebaseFirestore.instance
+            .collection('quizzes')
+            .doc(selectedQuiz['quizId'])
+            .update({'games': games});
+      }
+
+      // LA CORRECTION PRINCIPALE EST ICI : on vérifie à nouveau après le "await"
       if (mounted) {
         setState(() {
           _status = '';
@@ -2298,13 +2511,55 @@ Assure-toi que le JSON est strictement valide.
         );
       }
     } catch (e) {
-      // On vÃ©rifie aussi dans le bloc d'erreur
+      // On vérifie aussi dans le bloc d'erreur
       if (mounted) {
         setState(() {
-          _status = 'Erreur lors de la crÃ©ation de la salle : $e';
+          _status = 'Erreur lors de la création de la salle : $e';
         });
       }
     }
+  }
+
+  Future<String?> _promptForPseudo(BuildContext context) async {
+    String? pseudo;
+    await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        String tempPseudo = '';
+        return AlertDialog(
+          title: const Text('Entrez votre pseudo'),
+          content: TextField(
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Pseudo',
+              hintText: 'Votre nom en jeu',
+            ),
+            onChanged: (value) {
+              tempPseudo = value;
+            },
+            onSubmitted: (value) {
+              Navigator.of(context).pop(value);
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(null);
+              },
+              child: const Text('Annuler'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop(tempPseudo);
+              },
+              child: const Text('Rejoindre'),
+            ),
+          ],
+        );
+      },
+    ).then((value) => pseudo = value);
+    return pseudo;
   }
 
   void _joinOnlineRoom(String playerName, String code) async {
@@ -2321,7 +2576,7 @@ Assure-toi que le JSON est strictement valide.
               .get();
       if (querySnapshot.docs.isEmpty) {
         setState(() {
-          _status = 'Aucune salle active trouvÃ©e avec ce code.';
+          _status = 'Aucune salle active trouvée avec ce code.';
         });
         return;
       }
@@ -2329,7 +2584,7 @@ Assure-toi que le JSON est strictement valide.
       final roomData = roomDoc.data();
       if (roomData['started'] == true) {
         setState(() {
-          _status = 'Impossible de rejoindre une partie dÃ©jÃ  commencÃ©e.';
+          _status = 'Impossible de rejoindre une partie déjà commencée.';
         });
         return;
       }
@@ -2341,16 +2596,29 @@ Assure-toi que le JSON est strictement valide.
         });
         return;
       }
-      if (players.containsKey(playerName)) {
+      String finalPlayerName = playerName;
+
+      if (widget.isGuest) {
+        final pseudo = await _promptForPseudo(context);
+        if (pseudo == null || pseudo.trim().isEmpty) {
+          setState(() {
+            _status = 'Un pseudo est requis pour rejoindre la partie.';
+          });
+          return;
+        }
+        finalPlayerName = pseudo.trim();
+      }
+
+      if (players.containsKey(finalPlayerName)) {
         setState(() {
           _status =
-              'Vous Ãªtes dÃ©jÃ  dans cette salle ou un joueur porte ce nom.';
+              'Vous êtes déjà dans cette salle ou un joueur porte ce nom.';
         });
         return;
       }
 
       await roomDoc.reference.update({
-        'players.$playerName': {
+        'players.$finalPlayerName': {
           'isHost': false,
           'score': 0,
           'uid': _currentUser?.uid,
@@ -2368,7 +2636,7 @@ Assure-toi que le JSON est strictement valide.
                 roomId: roomDoc.id,
                 inviteCode: code,
                 isHost: false,
-                playerName: playerName,
+                playerName: finalPlayerName,
                 maxPlayers: settings.maxPlayers,
                 isGuest: widget.isGuest,
               ),
@@ -2381,7 +2649,7 @@ Assure-toi que le JSON est strictement valide.
     }
   }
 
-  // --- NOUVEAU : Renvoie un Future<bool> pour gÃ©rer l'animation du radar ---
+  // --- NOUVEAU : Renvoie un Future<bool> pour gérer l'animation du radar ---
   Future<bool> _findPublicGame(String playerName, {String? theme}) async {
     try {
       Query query = FirebaseFirestore.instance
@@ -2410,13 +2678,13 @@ Assure-toi que le JSON est strictement valide.
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Aucune partie publique trouvÃ©e. Essayez d\'en crÃ©er une !',
+                'Aucune partie publique trouvée. Essayez d\'en créer une !',
               ),
               backgroundColor: Colors.orange,
             ),
           );
         }
-        return false; // Pas trouvÃ©
+        return false; // Pas trouvé
       }
 
       availableRooms.sort((a, b) {
@@ -2430,7 +2698,7 @@ Assure-toi que le JSON est strictement valide.
         playerName,
         (roomToJoin.data() as Map<String, dynamic>)['inviteCode'],
       );
-      return true; // TrouvÃ© !
+      return true; // Trouvé !
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -2457,35 +2725,35 @@ Assure-toi que le JSON est strictement valide.
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'DÃ©bloquez des fonctionnalitÃ©s exclusives :',
+                    'Débloquez des fonctionnalités exclusives :',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   SizedBox(height: 10),
                   ListTile(
                     leading: Icon(Icons.star, color: Colors.amber),
                     title: Text(
-                      'Prompt de gÃ©nÃ©ration illimitÃ© (au lieu de 2000 caractÃ¨res)',
+                      'Prompt de génération illimité (au lieu de 2000 caractères)',
                     ),
                   ),
                   ListTile(
                     leading: Icon(Icons.casino, color: Colors.green),
                     title: Text(
-                      'Combinez un nombre illimitÃ© de jeux par quiz (au lieu de 3)',
+                      'Combinez un nombre illimité de jeux par quiz (au lieu de 3)',
                     ),
                   ),
                   ListTile(
                     leading: Icon(Icons.image, color: Colors.blue),
-                    title: Text('GÃ©nÃ©ration de quiz avec images activÃ©e'),
+                    title: Text('Génération de quiz avec images activée'),
                   ),
                   ListTile(
                     leading: Icon(Icons.all_inclusive, color: Colors.purple),
                     title: Text(
-                      'GÃ©nÃ©ration de jeux illimitÃ©e (30/jour max, dont 20 avec images)',
+                      'Génération de jeux illimitée (30/jour max, dont 20 avec images)',
                     ),
                   ),
                   SizedBox(height: 20),
                   Text(
-                    'Abonnez-vous maintenant pour une expÃ©rience premium !',
+                    'Abonnez-vous maintenant pour une expérience premium !',
                     style: TextStyle(fontStyle: FontStyle.italic),
                   ),
                 ],
@@ -2501,7 +2769,7 @@ Assure-toi que le JSON est strictement valide.
                   _activateVipSubscription();
                   Navigator.of(context).pop();
                 },
-                child: const Text('S\'abonner (SimulÃ©)'),
+                child: const Text('S\'abonner (Simulé)'),
               ),
             ],
           ),
@@ -2522,9 +2790,7 @@ Assure-toi que le JSON est strictement valide.
           .update({'isVip': true});
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text(
-            'FÃ©licitations ! Vous Ãªtes maintenant un membre VIP !',
-          ),
+          content: Text('Félicitations ! Vous êtes maintenant un membre VIP !'),
         ),
       );
       _loadUserData();
@@ -2544,7 +2810,7 @@ Assure-toi que le JSON est strictement valide.
           (context) => AlertDialog(
             title: const Text('Confirmation'),
             content: const Text(
-              'ÃŠtes-vous sÃ»r de vouloir vous dÃ©sabonner ? Vous perdrez immÃ©diatement l\'accÃ¨s Ã  tous les avantages VIP.',
+              'Êtes-vous sûr de vouloir vous désabonner ? Vous perdrez immédiatement l\'accès à tous les avantages VIP.',
             ),
             actions: [
               TextButton(
@@ -2554,7 +2820,7 @@ Assure-toi que le JSON est strictement valide.
               ElevatedButton(
                 onPressed: () => Navigator.of(context).pop(true),
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text('Se dÃ©sabonner'),
+                child: const Text('Se désabonner'),
               ),
             ],
           ),
@@ -2568,14 +2834,14 @@ Assure-toi que le JSON est strictement valide.
             .update({'isVip': false});
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Vous avez bien Ã©tÃ© dÃ©sabonnÃ©.'),
+            content: Text('Vous avez bien été désabonné.'),
             backgroundColor: Colors.orange,
           ),
         );
         _loadUserData();
       } catch (e) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur lors du dÃ©sabonnement : $e')),
+          SnackBar(content: Text('Erreur lors du désabonnement : $e')),
         );
       }
     }
@@ -2597,7 +2863,7 @@ Assure-toi que le JSON est strictement valide.
             ? [
               OnlineOptionsPage(
                 playerName: _savedName,
-                onCreateRoom: (s, q) {},
+                onCreateRoom: (s, q, save) {},
                 onJoinRoom: (code) {
                   _joinOnlineRoom(_savedName, code);
                 },
@@ -2608,11 +2874,6 @@ Assure-toi que le JSON est strictement valide.
                 qcmQuestionMode: DisplayMode.textAndImage,
                 qcmAnswerMode: DisplayMode.textAndImage,
               ),
-              _buildCreateQuizTab(
-                nonVipGenerationsRemaining,
-                vipGenerationsRemaining,
-                vipImageGenerationsRemaining,
-              ),
             ]
             : [
               _buildCreateQuizTab(
@@ -2620,11 +2881,12 @@ Assure-toi que le JSON est strictement valide.
                 vipGenerationsRemaining,
                 vipImageGenerationsRemaining,
               ),
-              // --- NOUVEAU CONTENEUR UNIFIÃ‰ ---
+              // --- NOUVEAU CONTENEUR UNIFIÉ ---
               QuizLibraryContainerPage(
                 isGuest: widget.isGuest,
                 onPlay: (games, text, quizId) => _playQuiz(games, text, quizId),
                 onPlayOnline: (quiz) => _showOnlineOptions(initialQuiz: quiz),
+                onCompleteAI: _startCompletingQuiz, // AJOUTEZ CETTE LIGNE
               ),
               LeaderboardPage(),
               MyIQPage(userId: _currentUser!.uid),
@@ -2633,7 +2895,7 @@ Assure-toi que le JSON est strictement valide.
                 playerName: _savedName,
                 onInviteToGame:
                     (settings, quiz) =>
-                        _createOnlineRoom(_savedName, settings, quiz),
+                        _createOnlineRoom(_savedName, settings, quiz, false),
               ),
             ];
 
@@ -2644,16 +2906,12 @@ Assure-toi que le JSON est strictement valide.
                 icon: Icon(Icons.login),
                 label: 'Rejoindre',
               ),
-              NavigationDestination(
-                icon: Icon(Icons.play_circle_outline),
-                label: 'Solo',
-              ),
             ]
             : const [
               NavigationDestination(
                 icon: Icon(Icons.create_outlined),
                 selectedIcon: Icon(Icons.create),
-                label: 'CrÃ©er',
+                label: 'Créer',
               ),
               NavigationDestination(
                 icon: Icon(Icons.extension_outlined),
@@ -2680,7 +2938,7 @@ Assure-toi que le JSON est strictement valide.
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          'QuizBot',
+          widget.isGuest ? 'QuizBot (Invité)' : 'QuizBot',
           style: TextStyle(
             fontWeight: FontWeight.bold,
             fontSize: 22,
@@ -2733,36 +2991,46 @@ Assure-toi que le JSON est strictement valide.
                     Icons.settings_outlined,
                     color: isDark ? Colors.white : AppColors.deepBlue,
                   ),
-                  tooltip: 'ParamÃ¨tres',
+                  tooltip: 'Paramètres',
                   onPressed:
                       () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const SettingsPage()),
                       ),
                 ),
-                IconButton(
-                  icon: Icon(
-                    Icons.logout,
-                    color: isDark ? Colors.white : AppColors.deepBlue,
-                  ),
-                  tooltip: 'DÃ©connexion',
-                  onPressed: () async {
-                    await FirebaseAuth.instance.signOut();
-                  },
-                ),
               ],
             ),
-          if (widget.isGuest)
+          if (widget.isGuest) ...[
+            TextButton.icon(
+              onPressed: () {
+                if (Navigator.of(context).canPop()) {
+                  Navigator.of(context).pop();
+                } else {
+                  FirebaseAuth.instance.signOut();
+                }
+              },
+              icon: Icon(
+                Icons.login,
+                color: isDark ? Colors.white : AppColors.deepBlue,
+              ),
+              label: Text(
+                'Se connecter',
+                style: TextStyle(
+                  color: isDark ? Colors.white : AppColors.deepBlue,
+                ),
+              ),
+            ),
             IconButton(
               icon: Icon(
                 Icons.settings_outlined,
                 color: isDark ? Colors.white : AppColors.deepBlue,
               ),
-              tooltip: 'ParamÃ¨tres',
+              tooltip: 'Paramètres',
               onPressed:
                   () => Navigator.of(context).push(
                     MaterialPageRoute(builder: (_) => const SettingsPage()),
                   ),
             ),
+          ],
         ],
       ),
       body: DecoratedBox(
@@ -2781,17 +3049,23 @@ Assure-toi que le JSON est strictement valide.
           ),
         ),
       ),
-      bottomNavigationBar: NavigationBar(
-        height: 74,
-        selectedIndex: _currentTabIndex,
-        onDestinationSelected:
-            (index) => setState(() => _currentTabIndex = index),
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        backgroundColor: isDark ? AppColors.midnightSurface : Colors.white,
-        indicatorColor: (isDark ? AppColors.neonCyan : AppColors.primaryBlue)
-            .withOpacity(0.18),
-        destinations: destinations,
-      ),
+      bottomNavigationBar:
+          widget.isGuest
+              ? null
+              : NavigationBar(
+                height: 74,
+                selectedIndex: _currentTabIndex,
+                onDestinationSelected:
+                    (index) => setState(() => _currentTabIndex = index),
+                labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+                backgroundColor:
+                    isDark ? AppColors.midnightSurface : Colors.white,
+                indicatorColor: (isDark
+                        ? AppColors.neonCyan
+                        : AppColors.primaryBlue)
+                    .withOpacity(0.18),
+                destinations: destinations,
+              ),
     );
   }
 
@@ -2931,6 +3205,163 @@ Assure-toi que le JSON est strictement valide.
               ),
             ),
           const SizedBox(height: 16),
+
+          // NOUVEAU: Boutons d'action principaux en haut
+          if (!widget.isGuest) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isGenerating ? null : _generateGames,
+                    icon:
+                        _isGenerating
+                            ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  Colors.white,
+                                ),
+                              ),
+                            )
+                            : const Icon(Icons.auto_awesome),
+                    label: Text(
+                      _isGenerating
+                          ? 'Génération en cours...'
+                          : (_quizToComplete != null
+                              ? (_modifyExistingGames
+                                  ? 'Modifier et Compléter par IA'
+                                  : 'Compléter par IA')
+                              : (_aiDecideGames
+                                  ? 'Générer (l\'IA choisit les jeux)'
+                                  : 'Générer par IA')),
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Theme.of(context).primaryColor,
+                      disabledBackgroundColor: Theme.of(
+                        context,
+                      ).primaryColor.withOpacity(0.7),
+                      disabledForegroundColor: Colors.white,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _showOnlineOptions,
+                    icon: const Icon(Icons.public),
+                    label: const Text(
+                      'Jouer en ligne',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.indigo,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      elevation: 3,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ] else ...[
+            Center(
+              child: Text(
+                'Connectez-vous pour utiliser l\'IA et jouer en ligne.',
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontStyle: FontStyle.italic,
+                  fontSize: 12,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // NOUVEAU : Encadré de modification
+          if (_quizToComplete != null) ...[
+            StyledCard(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      const Icon(
+                        Icons.auto_awesome,
+                        color: AppColors.quizPurple,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Complétion par IA',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: AppColors.quizPurple,
+                              ),
+                            ),
+                            Text(
+                              'Quiz: ${_quizToComplete!['text']}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.red),
+                        onPressed: _cancelCompletingQuiz,
+                        tooltip: 'Annuler',
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        'Modifier le quiz existant',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Switch(
+                        value: _modifyExistingGames,
+                        onChanged:
+                            (val) => setState(() => _modifyExistingGames = val),
+                        activeColor: AppColors.quizPurple,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+
           StyledCard(
             child: TextField(
               controller: _textController,
@@ -2945,431 +3376,326 @@ Assure-toi que le JSON est strictement valide.
           ),
           const SizedBox(height: 16),
           const Text(
-            'Sélectionnez les jeux :',
+            'Types de jeux à inclure dans le quiz :', // Clarification UI
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 8),
+
+          // Option pour que l'IA choisisse automatiquement
           StyledCard(
             child: Column(
-              children:
-                  _selectedGames.keys.map((game) {
-                    final isSelected = _selectedGames[game] ?? false;
-                    final hintEnabled = _hintsEnabled[game] ?? false;
-                    final isLockedForNonVip =
-                        !_isVip && !isSelected && nonVipLimitReached;
-
-                    return Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SwitchListTile(
+                  title: const Text('Laisser l\'IA décider des jeux'),
+                  subtitle: const Text(
+                    'L\'IA sélectionnera automatiquement les meilleurs mini-jeux selon votre texte',
+                  ),
+                  value: _aiDecideGames,
+                  activeColor: AppColors.quizPurple,
+                  onChanged: (val) => setState(() => _aiDecideGames = val),
+                ),
+                const Divider(),
+                SwitchListTile(
+                  title: const Text('Activer un timer'),
+                  subtitle: const Text(
+                    'Ajouter un chrono par défaut à chaque jeu',
+                  ),
+                  value: _globalTimerEnabled,
+                  activeColor: AppColors.neonCyan,
+                  onChanged:
+                      (val) => setState(() {
+                        _globalTimerEnabled = val;
+                        if (!val) _aiCustomTimers = false;
+                      }),
+                ),
+                if (_globalTimerEnabled)
+                  SwitchListTile(
+                    title: Row(
                       children: [
-                        CheckboxListTile(
-                          title: Row(
-                            children: [
-                              Expanded(
-                                child: Text(
-                                  game,
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                              ),
-                              if (isLockedForNonVip)
-                                const Icon(
-                                  Icons.lock_rounded,
-                                  color: AppColors.goldLock,
-                                  size: 18,
-                                ),
-                            ],
+                        const Text('Personnaliser par l\'IA'),
+                        const SizedBox(width: 8),
+                        if (!_isVip)
+                          const Icon(
+                            Icons.lock_rounded,
+                            color: AppColors.goldLock,
+                            size: 16,
                           ),
-                          value: isSelected,
-                          onChanged:
-                              isLockedForNonVip
-                                  ? null
-                                  : (value) {
-                                    setState(() {
-                                      _selectedGames[game] = value!;
-                                      if (value == false)
-                                        _hintsEnabled[game] = false;
-                                    });
-                                  },
-                          dense: true,
-                          controlAffinity: ListTileControlAffinity.leading,
+                      ],
+                    ),
+                    subtitle: const Text(
+                      'L\'IA définit le meilleur temps selon la difficulté (VIP)',
+                    ),
+                    value: _aiCustomTimers,
+                    activeColor: AppColors.neonCyan,
+                    onChanged:
+                        _isVip
+                            ? (val) => setState(() => _aiCustomTimers = val)
+                            : null,
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // Carte de choix de la source d'image (IA vs Pixabay)
+          StyledCard(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Source des images d\'illustration :',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+                const SizedBox(height: 8),
+                RadioListTile<String>(
+                  title: Row(
+                    children: [
+                      const Icon(Icons.search, color: Colors.blue),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _isVip
+                              ? 'Pixabay (Banque d\'images - Illimité VIP)'
+                              : 'Pixabay (Banque d\'images - ${_dailyPixabayCount}/300 par jour)',
+                          style: const TextStyle(fontSize: 13),
                         ),
-                        if (isLockedForNonVip)
-                          const Padding(
-                            padding: EdgeInsets.only(
-                              left: 48,
-                              right: 16,
-                              bottom: 6,
-                            ),
-                            child: Row(
+                      ),
+                    ],
+                  ),
+                  value: 'pixabay',
+                  groupValue: _imageSource,
+                  onChanged: (val) => setState(() => _imageSource = val!),
+                ),
+                RadioListTile<String>(
+                  title: Row(
+                    children: [
+                      const Icon(
+                        Icons.auto_awesome,
+                        color: AppColors.quizPurple,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'IA Générative FLUX (50/jour VIP)',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.bold,
+                            color: _isVip ? AppColors.quizPurple : Colors.grey,
+                          ),
+                        ),
+                      ),
+                      if (!_isVip)
+                        const Icon(
+                          Icons.lock_rounded,
+                          color: AppColors.goldLock,
+                          size: 18,
+                        ),
+                    ],
+                  ),
+                  value: 'ai',
+                  groupValue: _imageSource,
+                  onChanged:
+                      _isVip
+                          ? (val) => setState(() => _imageSource = val!)
+                          : null, // Grisé / Désactivé pour les non-VIP
+                ),
+                if (!_isVip)
+                  const Padding(
+                    padding: EdgeInsets.only(left: 16, bottom: 8),
+                    child: Text(
+                      '🔒 La génération d\'images par IA est réservée aux abonnés VIP (Max 50/jour).',
+                      style: TextStyle(fontSize: 11, color: AppColors.goldLock),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // Si l'IA ne décide pas elle-même, on affiche la liste manuelle
+          if (!_aiDecideGames) ...[
+            const SizedBox(height: 12),
+            StyledCard(
+              child: Column(
+                children:
+                    _selectedGames.keys.map((game) {
+                      final isSelected = _selectedGames[game] ?? false;
+                      final hintEnabled = _hintsEnabled[game] ?? false;
+                      final isLockedForNonVip =
+                          !_isVip && !isSelected && nonVipLimitReached;
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          CheckboxListTile(
+                            title: Row(
                               children: [
-                                Icon(
-                                  Icons.workspace_premium,
-                                  color: AppColors.goldLock,
-                                  size: 14,
-                                ),
-                                SizedBox(width: 6),
                                 Expanded(
                                   child: Text(
-                                    'Limite non-VIP atteinte (3 jeux max). Passez VIP pour débloquer.',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: AppColors.goldLock,
-                                    ),
+                                    game,
+                                    style: const TextStyle(fontSize: 14),
                                   ),
                                 ),
+                                if (isLockedForNonVip)
+                                  const Icon(
+                                    Icons.lock_rounded,
+                                    color: AppColors.goldLock,
+                                    size: 18,
+                                  ),
                               ],
                             ),
+                            value: isSelected,
+                            onChanged:
+                                isLockedForNonVip
+                                    ? null
+                                    : (value) {
+                                      setState(() {
+                                        _selectedGames[game] = value!;
+                                        if (value == false)
+                                          _hintsEnabled[game] = false;
+                                      });
+                                    },
+                            dense: true,
+                            controlAffinity: ListTileControlAffinity.leading,
                           ),
-                        Padding(
-                          padding: const EdgeInsets.only(
-                            left: 48,
-                            right: 16,
-                            bottom: 6,
-                          ),
-                          child: Opacity(
-                            opacity: isSelected ? 1.0 : 0.35,
-                            child: IgnorePointer(
-                              ignoring: !isSelected,
+                          if (isLockedForNonVip)
+                            const Padding(
+                              padding: EdgeInsets.only(
+                                left: 48,
+                                right: 16,
+                                bottom: 6,
+                              ),
                               child: Row(
                                 children: [
                                   Icon(
-                                    Icons.lightbulb_outline,
-                                    size: 15,
-                                    color:
-                                        hintEnabled
-                                            ? Colors.amber.shade700
-                                            : Colors.grey,
+                                    Icons.workspace_premium,
+                                    color: AppColors.goldLock,
+                                    size: 14,
                                   ),
-                                  const SizedBox(width: 6),
-                                  Text(
-                                    hintEnabled
-                                        ? 'Indice activé'
-                                        : 'Indice désactivé',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color:
-                                          hintEnabled
-                                              ? Colors.amber.shade700
-                                              : Colors.grey,
-                                    ),
-                                  ),
-                                  const Spacer(),
-                                  Transform.scale(
-                                    scale: 0.75,
-                                    child: Switch(
-                                      value: hintEnabled,
-                                      onChanged:
-                                          (v) => setState(
-                                            () => _hintsEnabled[game] = v,
-                                          ),
-                                      activeColor: Colors.amber.shade700,
-                                      materialTapTargetSize:
-                                          MaterialTapTargetSize.shrinkWrap,
+                                  SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      'Limite non-VIP atteinte (3 jeux max). Passez VIP pour débloquer.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: AppColors.goldLock,
+                                      ),
                                     ),
                                   ),
                                 ],
                               ),
                             ),
-                          ),
-                        ),
-                        AnimatedSize(
-                          duration: const Duration(milliseconds: 300),
-                          curve: Curves.easeInOut,
-                          child:
-                              isSelected &&
-                                      (game == 'QCM' ||
-                                          game == 'Relier' ||
-                                          game == 'Memory')
-                                  ? Container(
-                                    margin: const EdgeInsets.only(
-                                      left: 48,
-                                      right: 16,
-                                      bottom: 12,
-                                    ),
-                                    padding: const EdgeInsets.all(12),
-                                    decoration: BoxDecoration(
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              left: 48,
+                              right: 16,
+                              bottom: 6,
+                            ),
+                            child: Opacity(
+                              opacity: isSelected ? 1.0 : 0.35,
+                              child: IgnorePointer(
+                                ignoring: !isSelected,
+                                child: Row(
+                                  children: [
+                                    Icon(
+                                      Icons.lightbulb_outline,
+                                      size: 15,
                                       color:
-                                          isDark
-                                              ? Colors.grey[850]
-                                              : Colors.grey[100],
-                                      borderRadius: BorderRadius.circular(12),
-                                      border: Border.all(
-                                        color: Colors.grey.withOpacity(0.2),
+                                          hintEnabled
+                                              ? Colors.amber.shade700
+                                              : Colors.grey,
+                                    ),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      hintEnabled
+                                          ? 'Indice activé'
+                                          : 'Indice désactivé',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color:
+                                            hintEnabled
+                                                ? Colors.amber.shade700
+                                                : Colors.grey,
                                       ),
                                     ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Icon(
-                                              Icons.settings,
-                                              size: 16,
-                                              color:
-                                                  Theme.of(
-                                                    context,
-                                                  ).primaryColor,
+                                    const Spacer(),
+                                    Transform.scale(
+                                      scale: 0.75,
+                                      child: Switch(
+                                        value: hintEnabled,
+                                        onChanged:
+                                            (v) => setState(
+                                              () => _hintsEnabled[game] = v,
                                             ),
-                                            const SizedBox(width: 8),
-                                            Text(
-                                              'Options avancées',
-                                              style: TextStyle(
-                                                fontWeight: FontWeight.bold,
+                                        activeColor: Colors.amber.shade700,
+                                        materialTapTargetSize:
+                                            MaterialTapTargetSize.shrinkWrap,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          AnimatedSize(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeInOut,
+                            child:
+                                isSelected &&
+                                        (game == 'QCM' ||
+                                            game == 'Relier' ||
+                                            game == 'Memory')
+                                    ? Container(
+                                      margin: const EdgeInsets.only(
+                                        left: 48,
+                                        right: 16,
+                                        bottom: 12,
+                                      ),
+                                      padding: const EdgeInsets.all(12),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            isDark
+                                                ? Colors.grey[850]
+                                                : Colors.grey[100],
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: Colors.grey.withOpacity(0.2),
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Icon(
+                                                Icons.settings,
+                                                size: 16,
                                                 color:
                                                     Theme.of(
                                                       context,
                                                     ).primaryColor,
                                               ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 12),
-                                        if (game == 'QCM') ...[
-                                          DropdownButtonFormField<DisplayMode>(
-                                            decoration: InputDecoration(
-                                              labelText:
-                                                  'Affichage de la question',
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 8,
-                                                  ),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              suffixIcon:
-                                                  !_isVip
-                                                      ? const Icon(
-                                                        Icons.lock,
-                                                        color: Colors.amber,
-                                                        size: 18,
-                                                      )
-                                                      : null,
-                                            ),
-                                            value: _qcmQuestionMode,
-                                            items:
-                                                DisplayMode.values.map((mode) {
-                                                  bool isImageOption =
-                                                      mode != DisplayMode.text;
-                                                  return DropdownMenuItem(
-                                                    value: mode,
-                                                    enabled:
-                                                        _isVip ||
-                                                        !isImageOption,
-                                                    child: Text(
-                                                      displayModeToString(
-                                                            mode,
-                                                          ) +
-                                                          (!_isVip &&
-                                                                  isImageOption
-                                                              ? ' (VIP)'
-                                                              : ''),
-                                                      style: const TextStyle(
-                                                        fontSize: 13,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }).toList(),
-                                            onChanged:
-                                                (value) => setState(
-                                                  () =>
-                                                      _qcmQuestionMode = value!,
+                                              const SizedBox(width: 8),
+                                              Text(
+                                                'Options avancées',
+                                                style: TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  color:
+                                                      Theme.of(
+                                                        context,
+                                                      ).primaryColor,
                                                 ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          DropdownButtonFormField<DisplayMode>(
-                                            decoration: InputDecoration(
-                                              labelText:
-                                                  'Affichage des réponses',
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 8,
-                                                  ),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
                                               ),
-                                              suffixIcon:
-                                                  !_isVip
-                                                      ? const Icon(
-                                                        Icons.lock,
-                                                        color: Colors.amber,
-                                                        size: 18,
-                                                      )
-                                                      : null,
-                                            ),
-                                            value: _qcmAnswerMode,
-                                            items:
-                                                DisplayMode.values.map((mode) {
-                                                  bool isImageOption =
-                                                      mode != DisplayMode.text;
-                                                  return DropdownMenuItem(
-                                                    value: mode,
-                                                    enabled:
-                                                        _isVip ||
-                                                        !isImageOption,
-                                                    child: Text(
-                                                      displayModeToString(
-                                                            mode,
-                                                          ) +
-                                                          (!_isVip &&
-                                                                  isImageOption
-                                                              ? ' (VIP)'
-                                                              : ''),
-                                                      style: const TextStyle(
-                                                        fontSize: 13,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }).toList(),
-                                            onChanged:
-                                                (value) => setState(
-                                                  () => _qcmAnswerMode = value!,
-                                                ),
+                                            ],
                                           ),
-                                        ],
-                                        if (game == 'Relier') ...[
-                                          DropdownButtonFormField<
-                                            MatchDisplayMode
-                                          >(
-                                            decoration: InputDecoration(
-                                              labelText: 'Type de jeu',
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 8,
-                                                  ),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              suffixIcon:
-                                                  !_isVip
-                                                      ? const Icon(
-                                                        Icons.lock,
-                                                        color: Colors.amber,
-                                                        size: 18,
-                                                      )
-                                                      : null,
-                                            ),
-                                            value: _matchDisplayMode,
-                                            items:
-                                                MatchDisplayMode.values.map((
-                                                  mode,
-                                                ) {
-                                                  bool isImageOption =
-                                                      mode ==
-                                                      MatchDisplayMode
-                                                          .imageToDefinition;
-                                                  return DropdownMenuItem(
-                                                    value: mode,
-                                                    enabled:
-                                                        _isVip ||
-                                                        !isImageOption,
-                                                    child: Text(
-                                                      matchDisplayModeToString(
-                                                            mode,
-                                                          ) +
-                                                          (!_isVip &&
-                                                                  isImageOption
-                                                              ? ' (VIP)'
-                                                              : ''),
-                                                      style: const TextStyle(
-                                                        fontSize: 13,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }).toList(),
-                                            onChanged:
-                                                (value) => setState(
-                                                  () =>
-                                                      _matchDisplayMode =
-                                                          value!,
-                                                ),
-                                          ),
-                                        ],
-                                        if (game == 'Memory') ...[
-                                          DropdownButtonFormField<
-                                            MemoryDisplayMode
-                                          >(
-                                            decoration: InputDecoration(
-                                              labelText: 'Type de paires',
-                                              contentPadding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 12,
-                                                    vertical: 8,
-                                                  ),
-                                              border: OutlineInputBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(8),
-                                              ),
-                                              suffixIcon:
-                                                  !_isVip
-                                                      ? const Icon(
-                                                        Icons.lock,
-                                                        color: Colors.amber,
-                                                        size: 18,
-                                                      )
-                                                      : null,
-                                            ),
-                                            value: _memoryDisplayMode,
-                                            items:
-                                                MemoryDisplayMode.values.map((
-                                                  mode,
-                                                ) {
-                                                  final isImageOption =
-                                                      mode !=
-                                                      MemoryDisplayMode
-                                                          .wordToDefinition;
-                                                  return DropdownMenuItem(
-                                                    value: mode,
-                                                    enabled:
-                                                        _isVip ||
-                                                        !isImageOption,
-                                                    child: Text(
-                                                      memoryDisplayModeToString(
-                                                            mode,
-                                                          ) +
-                                                          (!_isVip &&
-                                                                  isImageOption
-                                                              ? ' (VIP)'
-                                                              : ''),
-                                                      style: const TextStyle(
-                                                        fontSize: 13,
-                                                      ),
-                                                    ),
-                                                  );
-                                                }).toList(),
-                                            onChanged:
-                                                (value) => setState(
-                                                  () =>
-                                                      _memoryDisplayMode =
-                                                          value!,
-                                                ),
-                                          ),
-                                          const SizedBox(height: 8),
-                                          SwitchListTile(
-                                            title: const Text(
-                                              'Laisser l\'IA décider du nombre de paires',
-                                              style: TextStyle(fontSize: 13),
-                                            ),
-                                            value: _aiDecidePairs,
-                                            dense: true,
-                                            contentPadding: EdgeInsets.zero,
-                                            onChanged: (value) {
-                                              setState(() {
-                                                _aiDecidePairs = value;
-                                                if (_aiDecidePairs)
-                                                  _memoryPairs = null;
-                                              });
-                                            },
-                                          ),
-                                          if (!_aiDecidePairs)
-                                            DropdownButtonFormField<int>(
+                                          const SizedBox(height: 12),
+                                          if (game == 'QCM') ...[
+                                            DropdownButtonFormField<
+                                              DisplayMode
+                                            >(
                                               decoration: InputDecoration(
-                                                labelText: 'Nombre de paires',
+                                                labelText:
+                                                    'Affichage de la question',
                                                 contentPadding:
                                                     const EdgeInsets.symmetric(
                                                       horizontal: 12,
@@ -3379,37 +3705,293 @@ Assure-toi que le JSON est strictement valide.
                                                   borderRadius:
                                                       BorderRadius.circular(8),
                                                 ),
+                                                suffixIcon:
+                                                    !_isVip
+                                                        ? const Icon(
+                                                          Icons.lock,
+                                                          color: Colors.amber,
+                                                          size: 18,
+                                                        )
+                                                        : null,
                                               ),
-                                              value: _memoryPairs,
-                                              items: List.generate(
-                                                7,
-                                                (index) =>
-                                                    DropdownMenuItem<int>(
-                                                      value: 4 + index,
+                                              value: _qcmQuestionMode,
+                                              items:
+                                                  DisplayMode.values.map((
+                                                    mode,
+                                                  ) {
+                                                    bool isImageOption =
+                                                        mode !=
+                                                        DisplayMode.text;
+                                                    return DropdownMenuItem(
+                                                      value: mode,
+                                                      enabled:
+                                                          _isVip ||
+                                                          !isImageOption,
                                                       child: Text(
-                                                        '${4 + index} paires',
+                                                        displayModeToString(
+                                                              mode,
+                                                            ) +
+                                                            (!_isVip &&
+                                                                    isImageOption
+                                                                ? ' (VIP)'
+                                                                : ''),
                                                         style: const TextStyle(
                                                           fontSize: 13,
                                                         ),
                                                       ),
-                                                    ),
-                                              ),
+                                                    );
+                                                  }).toList(),
                                               onChanged:
                                                   (value) => setState(
-                                                    () => _memoryPairs = value,
+                                                    () =>
+                                                        _qcmQuestionMode =
+                                                            value!,
                                                   ),
                                             ),
+                                            const SizedBox(height: 8),
+                                            DropdownButtonFormField<
+                                              DisplayMode
+                                            >(
+                                              decoration: InputDecoration(
+                                                labelText:
+                                                    'Affichage des réponses',
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 12,
+                                                      vertical: 8,
+                                                    ),
+                                                border: OutlineInputBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                suffixIcon:
+                                                    !_isVip
+                                                        ? const Icon(
+                                                          Icons.lock,
+                                                          color: Colors.amber,
+                                                          size: 18,
+                                                        )
+                                                        : null,
+                                              ),
+                                              value: _qcmAnswerMode,
+                                              items:
+                                                  DisplayMode.values.map((
+                                                    mode,
+                                                  ) {
+                                                    bool isImageOption =
+                                                        mode !=
+                                                        DisplayMode.text;
+                                                    return DropdownMenuItem(
+                                                      value: mode,
+                                                      enabled:
+                                                          _isVip ||
+                                                          !isImageOption,
+                                                      child: Text(
+                                                        displayModeToString(
+                                                              mode,
+                                                            ) +
+                                                            (!_isVip &&
+                                                                    isImageOption
+                                                                ? ' (VIP)'
+                                                                : ''),
+                                                        style: const TextStyle(
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                              onChanged:
+                                                  (value) => setState(
+                                                    () =>
+                                                        _qcmAnswerMode = value!,
+                                                  ),
+                                            ),
+                                          ],
+                                          if (game == 'Relier') ...[
+                                            DropdownButtonFormField<
+                                              MatchDisplayMode
+                                            >(
+                                              decoration: InputDecoration(
+                                                labelText: 'Type de jeu',
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 12,
+                                                      vertical: 8,
+                                                    ),
+                                                border: OutlineInputBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                suffixIcon:
+                                                    !_isVip
+                                                        ? const Icon(
+                                                          Icons.lock,
+                                                          color: Colors.amber,
+                                                          size: 18,
+                                                        )
+                                                        : null,
+                                              ),
+                                              value: _matchDisplayMode,
+                                              items:
+                                                  MatchDisplayMode.values.map((
+                                                    mode,
+                                                  ) {
+                                                    bool isImageOption =
+                                                        mode ==
+                                                        MatchDisplayMode
+                                                            .imageToDefinition;
+                                                    return DropdownMenuItem(
+                                                      value: mode,
+                                                      enabled:
+                                                          _isVip ||
+                                                          !isImageOption,
+                                                      child: Text(
+                                                        matchDisplayModeToString(
+                                                              mode,
+                                                            ) +
+                                                            (!_isVip &&
+                                                                    isImageOption
+                                                                ? ' (VIP)'
+                                                                : ''),
+                                                        style: const TextStyle(
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                              onChanged:
+                                                  (value) => setState(
+                                                    () =>
+                                                        _matchDisplayMode =
+                                                            value!,
+                                                  ),
+                                            ),
+                                          ],
+                                          if (game == 'Memory') ...[
+                                            DropdownButtonFormField<
+                                              MemoryDisplayMode
+                                            >(
+                                              decoration: InputDecoration(
+                                                labelText: 'Type de paires',
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 12,
+                                                      vertical: 8,
+                                                    ),
+                                                border: OutlineInputBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(8),
+                                                ),
+                                                suffixIcon:
+                                                    !_isVip
+                                                        ? const Icon(
+                                                          Icons.lock,
+                                                          color: Colors.amber,
+                                                          size: 18,
+                                                        )
+                                                        : null,
+                                              ),
+                                              value: _memoryDisplayMode,
+                                              items:
+                                                  MemoryDisplayMode.values.map((
+                                                    mode,
+                                                  ) {
+                                                    final isImageOption =
+                                                        mode !=
+                                                        MemoryDisplayMode
+                                                            .wordToDefinition;
+                                                    return DropdownMenuItem(
+                                                      value: mode,
+                                                      enabled:
+                                                          _isVip ||
+                                                          !isImageOption,
+                                                      child: Text(
+                                                        memoryDisplayModeToString(
+                                                              mode,
+                                                            ) +
+                                                            (!_isVip &&
+                                                                    isImageOption
+                                                                ? ' (VIP)'
+                                                                : ''),
+                                                        style: const TextStyle(
+                                                          fontSize: 13,
+                                                        ),
+                                                      ),
+                                                    );
+                                                  }).toList(),
+                                              onChanged:
+                                                  (value) => setState(
+                                                    () =>
+                                                        _memoryDisplayMode =
+                                                            value!,
+                                                  ),
+                                            ),
+                                            const SizedBox(height: 8),
+                                            SwitchListTile(
+                                              title: const Text(
+                                                'Laisser l\'IA décider du nombre de paires',
+                                                style: TextStyle(fontSize: 13),
+                                              ),
+                                              value: _aiDecidePairs,
+                                              dense: true,
+                                              contentPadding: EdgeInsets.zero,
+                                              onChanged: (value) {
+                                                setState(() {
+                                                  _aiDecidePairs = value;
+                                                  if (_aiDecidePairs)
+                                                    _memoryPairs = null;
+                                                });
+                                              },
+                                            ),
+                                            if (!_aiDecidePairs)
+                                              DropdownButtonFormField<int>(
+                                                decoration: InputDecoration(
+                                                  labelText: 'Nombre de paires',
+                                                  contentPadding:
+                                                      const EdgeInsets.symmetric(
+                                                        horizontal: 12,
+                                                        vertical: 8,
+                                                      ),
+                                                  border: OutlineInputBorder(
+                                                    borderRadius:
+                                                        BorderRadius.circular(
+                                                          8,
+                                                        ),
+                                                  ),
+                                                ),
+                                                value: _memoryPairs,
+                                                items: List.generate(
+                                                  7,
+                                                  (index) =>
+                                                      DropdownMenuItem<int>(
+                                                        value: 4 + index,
+                                                        child: Text(
+                                                          '${4 + index} paires',
+                                                          style:
+                                                              const TextStyle(
+                                                                fontSize: 13,
+                                                              ),
+                                                        ),
+                                                      ),
+                                                ),
+                                                onChanged:
+                                                    (value) => setState(
+                                                      () =>
+                                                          _memoryPairs = value,
+                                                    ),
+                                              ),
+                                          ],
                                         ],
-                                      ],
-                                    ),
-                                  )
-                                  : const SizedBox.shrink(),
-                        ),
-                      ],
-                    );
-                  }).toList(),
+                                      ),
+                                    )
+                                    : const SizedBox.shrink(),
+                          ),
+                        ],
+                      );
+                    }).toList(),
+              ),
             ),
-          ),
+          ],
 
           const SizedBox(height: 16),
           AnimatedOpacity(
@@ -3431,26 +4013,6 @@ Assure-toi que le JSON est strictement valide.
           ),
 
           const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            height: 55,
-            child: ElevatedButton.icon(
-              onPressed: _generateGames,
-              icon: const Icon(Icons.auto_awesome),
-              label: const Text(
-                'Générer les jeux (IA)',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Theme.of(context).primaryColor,
-                foregroundColor: Colors.white,
-                elevation: 4,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-              ),
-            ),
-          ),
 
           if (nonVipLimitReached) ...[
             const SizedBox(height: 12),
@@ -3463,62 +4025,6 @@ Assure-toi que le JSON est strictement valide.
                 style: ElevatedButton.styleFrom(
                   disabledBackgroundColor: Colors.grey.shade300,
                   disabledForegroundColor: Colors.grey.shade700,
-                ),
-              ),
-            ),
-          ],
-
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            height: 55,
-            child: OutlinedButton.icon(
-              onPressed:
-                  () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder:
-                          (_) => ManualQuizCreatorPage(
-                            initialGames: _generatedGames,
-                          ),
-                    ),
-                  ),
-              icon: const Icon(Icons.edit_note),
-              label: const Text(
-                'Créer un jeu manuellement',
-                style: TextStyle(fontSize: 16),
-              ),
-              style: OutlinedButton.styleFrom(
-                side: BorderSide(
-                  color: Theme.of(context).primaryColor,
-                  width: 2,
-                ),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16),
-                ),
-              ),
-            ),
-          ),
-
-          if (!widget.isGuest) ...[
-            const SizedBox(height: 12),
-            SizedBox(
-              width: double.infinity,
-              height: 55,
-              child: ElevatedButton.icon(
-                onPressed: _showOnlineOptions,
-                icon: const Icon(Icons.public),
-                label: const Text(
-                  'Jouer en ligne',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green.shade600,
-                  foregroundColor: Colors.white,
-                  elevation: 4,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                  ),
                 ),
               ),
             ),
@@ -3564,7 +4070,7 @@ Assure-toi que le JSON est strictement valide.
 }
 
 // ============================================================
-// PAGE DE CRÃ‰ATION MANUELLE DE QUIZ (REFONTE UI/UX)
+// PAGE DE CRÉATION MANUELLE DE QUIZ (REFONTE UI/UX)
 // ============================================================
 class ManualQuizCreatorPage extends StatefulWidget {
   final List<dynamic> initialGames;
@@ -3581,17 +4087,17 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
     'Vrai ou Faux',
     'Qui suis-je ?',
     'Le Mot Anagramme',
-    'ComplÃ©ter la Phrase',
-    'Pendu amÃ©liorÃ©',
-    'Mot MystÃ¨re',
+    'Compléter la Phrase',
+    'Pendu amélioré',
+    'Mot Mystère',
     'Choisir l\'Intrus',
-    'Deux VÃ©ritÃ©s, un Mensonge',
-    'Chronologie MÃ©langÃ©e',
+    'Deux Vérités, un Mensonge',
+    'Chronologie Mélangée',
     'Estimation',
     'Quiz par Indices',
     'Memory',
     'Relier',
-    'Quiz Ã‰clair',
+    'Quiz Éclair',
   ];
 
   @override
@@ -3640,7 +4146,7 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Choisir un type de jeu',
+                'Format de la question', // Clarifié au lieu de "Type de jeu"
                 style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
@@ -3690,24 +4196,23 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
             : (game['question'] ?? '');
       if (type.contains('Vrai ou Faux'))
         return game['question']?.toString() ?? '';
-      if (type.contains('ComplÃ©ter'))
-        return game['question']?.toString() ?? '';
+      if (type.contains('Compléter')) return game['question']?.toString() ?? '';
       if (type.contains('Qui suis')) return game['riddle']?.toString() ?? '';
       if (type.contains('Anagramme')) return game['anagram']?.toString() ?? '';
-      if (type.contains('Pendu') || type.contains('Mot MystÃ¨re'))
+      if (type.contains('Pendu') || type.contains('Mot Mystère'))
         return game['word']?.toString() ?? '';
       if (type.contains('Intrus')) return game['question']?.toString() ?? '';
-      if (type.contains('Deux VÃ©ritÃ©s'))
+      if (type.contains('Deux Vérités'))
         return (game['statements'] as List?)?.join(', ') ?? '';
       if (type.contains('Chronologie'))
-        return (game['events'] as List?)?.join(' â†’ ') ?? '';
+        return (game['events'] as List?)?.join(' → ') ?? '';
       if (type.contains('Estimation'))
         return game['question']?.toString() ?? '';
       if (type.contains('Quiz par Indices'))
-        return 'RÃ©ponse: ${game['answer']?.toString() ?? ''}';
+        return 'Réponse: ${game['answer']?.toString() ?? ''}';
       if (type.contains('Relier') || type.contains('Memory')) {
         final pairs = game['pairs'] as List? ?? game['items'] as List? ?? [];
-        return '${pairs.length} paires configurÃ©es';
+        return '${pairs.length} paires configurées';
       }
     } catch (_) {}
     return '';
@@ -3759,7 +4264,7 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'Ã‰diteur de Jeu', // Au lieu de Ã‰diteur de Quiz
+          'Éditeur de Quiz', // Un Quiz contient des questions
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         leading: const BackButton(color: Colors.white),
@@ -3788,7 +4293,7 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _showAddGameTypeSelector,
         icon: const Icon(Icons.add),
-        label: const Text('Ajouter un jeu'),
+        label: const Text('Ajouter une question'), // Clarifié
         backgroundColor: AppColors.primaryBlue,
         foregroundColor: Colors.white,
       ),
@@ -3808,12 +4313,12 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
                           ),
                           const SizedBox(height: 16),
                           const Text(
-                            'Aucun mini-jeu ajoutÃ©.',
+                            'Aucune question dans ce quiz.', // Clarifié
                             style: TextStyle(fontSize: 18, color: Colors.grey),
                           ),
                           const SizedBox(height: 8),
                           const Text(
-                            'Appuyez sur + pour ajouter des questions/jeux.',
+                            'Appuyez sur + pour ajouter une question/épreuve.', // Clarifié
                             style: TextStyle(color: Colors.grey),
                           ),
                         ],
@@ -3829,14 +4334,13 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
                       itemCount: _games.length,
                       itemBuilder: (ctx, i) {
                         final game = _games[i];
+                        game['id'] ??= '${game.hashCode}_$i';
                         final type = game['type']?.toString() ?? '';
                         final summary = _gameTypeSummary(game);
                         final imageInfos = _getImageInfos(game);
 
                         return StyledCard(
-                          key: ValueKey(
-                            game.hashCode.toString() + i.toString(),
-                          ),
+                          key: ValueKey(game['id']),
                           padding: const EdgeInsets.all(0),
                           margin: const EdgeInsets.symmetric(
                             vertical: 6,
@@ -3982,7 +4486,7 @@ class _ManualQuizCreatorPageState extends State<ManualQuizCreatorPage> {
 }
 
 // ============================================================
-// ECRAN D'AJOUT/Ã‰DITION D'UN JEU (REMPLACE _AddGameDialog)
+// ECRAN D'AJOUT/ÉDITION D'UN JEU (REMPLACE _AddGameDialog)
 // ============================================================
 class AddEditGameScreen extends StatefulWidget {
   final String gameType;
@@ -4013,6 +4517,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
   final _cHint = TextEditingController();
   final _cImageUrl = TextEditingController(); // Image de la question
+  final _cTimeLimit = TextEditingController();
 
   // Listes dynamiques pour les options (QCM, Intrus, Quiz Eclair)
   List<TextEditingController> _optionsTexts = [
@@ -4067,8 +4572,11 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
     _cHint.text = g['hint']?.toString() ?? '';
     _cImageUrl.text = g['image_url']?.toString() ?? '';
+    if (g['timeLimit'] != null) {
+      _cTimeLimit.text = g['timeLimit'].toString();
+    }
 
-    if (type == 'QCM' || type.contains('Intrus') || type == 'Quiz Ã‰clair') {
+    if (type == 'QCM' || type.contains('Intrus') || type == 'Quiz Éclair') {
       final q = g['question'];
       _c1.text =
           q is Map ? (q['text']?.toString() ?? '') : (q?.toString() ?? '');
@@ -4082,7 +4590,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
         _c5.text = g['intruder']?.toString() ?? '';
         dynamicOpts.remove(_c5.text); // Enlever l'intrus des options normales
       }
-      if (type == 'Quiz Ã‰clair') {
+      if (type == 'Quiz Éclair') {
         dynamicOpts = g['choices'] as List? ?? [];
         _c5.text = g['answer']?.toString() ?? '';
       }
@@ -4108,7 +4616,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
     } else if (type == 'Vrai ou Faux') {
       _c1.text = g['question']?.toString() ?? '';
       _boolAnswer = g['answer'] as bool? ?? true;
-    } else if (type == 'ComplÃ©ter la Phrase') {
+    } else if (type == 'Compléter la Phrase') {
       _c1.text = g['question']?.toString() ?? '';
       _c2.text = g['correct']?.toString() ?? '';
     } else if (type == 'Qui suis-je ?') {
@@ -4116,11 +4624,11 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       _c2.text = g['answer']?.toString() ?? '';
     } else if (type == 'Le Mot Anagramme') {
       _c1.text = g['solution']?.toString() ?? '';
-    } else if (type == 'Pendu amÃ©liorÃ©' || type == 'Mot MystÃ¨re') {
+    } else if (type == 'Pendu amélioré' || type == 'Mot Mystère') {
       _c1.text = g['word']?.toString() ?? '';
     }
-    // Intrus traitÃ© plus haut
-    else if (type.contains('Deux VÃ©ritÃ©s')) {
+    // Intrus traité plus haut
+    else if (type.contains('Deux Vérités')) {
       final stmts =
           (g['statements'] as List?)?.map((s) => s.toString()).toList() ?? [];
       _cStatements = stmts.map((s) => TextEditingController(text: s)).toList();
@@ -4143,7 +4651,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       _c2.text = (g['answer'] as num?)?.toString() ?? '';
       _c3.text = g['unit']?.toString() ?? '';
     }
-    // Quiz Eclair traitÃ© plus haut
+    // Quiz Eclair traité plus haut
     else if (type == 'Relier' || type == 'Memory') {
       _displayMode =
           g['displayMode']?.toString() ??
@@ -4188,6 +4696,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       _c5,
       _cHint,
       _cImageUrl,
+      _cTimeLimit,
       _cImgOpt1,
       _cImgOpt2,
       _cImgOpt3,
@@ -4204,13 +4713,13 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
     super.dispose();
   }
 
-  // Fonction appelÃ©e quand on clique sur le bouton "Uploader"
+  // Fonction appelée quand on clique sur le bouton "Uploader"
   Future<void> _pickAndUploadImage(TextEditingController controller) async {
-    // âš ï¸ TODO: ImplÃ©menter image_picker + Firebase Storage ici.
+    // âš ï¸  TODO: Implémenter image_picker + Firebase Storage ici.
 
-    // Pour l'instant on simule l'upload pour que tu voies le rÃ©sultat visuel
+    // Pour l'instant on simule l'upload pour que tu voies le résultat visuel
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Bouton d'upload cliquÃ© ! (Simulation)")),
+      const SnackBar(content: Text("Bouton d'upload cliqué ! (Simulation)")),
     );
     setState(() => controller.text = "https://picsum.photos/200");
   }
@@ -4221,12 +4730,15 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
     final type = widget.gameType;
     final hint = _cHint.text.trim();
     final imgUrl = _cImageUrl.text.trim();
+    final timeLimitStr = _cTimeLimit.text.trim();
+    final timeLimit = int.tryParse(timeLimitStr);
 
     final base = {
       'type': type,
       'difficulty': _difficulty,
       if (hint.isNotEmpty) 'hint': hint,
       if (imgUrl.isNotEmpty && type != 'QCM') 'image_url': imgUrl,
+      if (timeLimit != null) 'timeLimit': timeLimit,
     };
 
     if (type == 'QCM') {
@@ -4241,7 +4753,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Erreur: La bonne rÃ©ponse doit Ãªtre identique Ã  l\'une des options.',
+              'Erreur: La bonne réponse doit être identique à l\'une des options.',
             ),
             backgroundColor: Colors.red,
           ),
@@ -4284,7 +4796,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       };
     }
 
-    if (type == 'Quiz Ã‰clair') {
+    if (type == 'Quiz Éclair') {
       final choices =
           _optionsTexts
               .map((c) => c.text.trim())
@@ -4299,11 +4811,11 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       };
     }
 
-    // Eclair traitÃ© plus haut
+    // Eclair traité plus haut
 
     if (type == 'Vrai ou Faux')
       return {...base, 'question': _c1.text.trim(), 'answer': _boolAnswer};
-    if (type == 'ComplÃ©ter la Phrase')
+    if (type == 'Compléter la Phrase')
       return {...base, 'question': _c1.text.trim(), 'correct': _c2.text.trim()};
     if (type == 'Qui suis-je ?')
       return {...base, 'riddle': _c1.text.trim(), 'answer': _c2.text.trim()};
@@ -4316,16 +4828,16 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       );
       return {...base, 'anagram': solution, 'solution': solution};
     }
-    if (type == 'Pendu amÃ©liorÃ©' || type == 'Mot MystÃ¨re') {
+    if (type == 'Pendu amélioré' || type == 'Mot Mystère') {
       final word = _c1.text.trim().toUpperCase().replaceAll(RegExp(r'\s+'), '');
-      if (type == 'Mot MystÃ¨re' && word.length < 4) return null;
+      if (type == 'Mot Mystère' && word.length < 4) return null;
       return {...base, 'word': word};
     }
 
-    // Intrus traitÃ© plus haut
+    // Intrus traité plus haut
 
-    // ROBUSTESSE: SÃ©curisation du mensonge
-    if (type.contains('Deux VÃ©ritÃ©s')) {
+    // ROBUSTESSE: Sécurisation du mensonge
+    if (type.contains('Deux Vérités')) {
       final stmts =
           _cStatements
               .map((c) => c.text.trim())
@@ -4346,7 +4858,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Erreur: Le mensonge doit Ãªtre EXACTEMENT identique Ã  l\'une des affirmations.',
+              'Erreur: Le mensonge doit être EXACTEMENT identique à l\'une des affirmations.',
             ),
             backgroundColor: Colors.red,
           ),
@@ -4365,7 +4877,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       if (evts.length < 3) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Il faut au moins 3 Ã©vÃ©nements.'),
+            content: Text('Il faut au moins 3 événements.'),
             backgroundColor: Colors.orange,
           ),
         );
@@ -4519,7 +5031,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
                     if (type == 'QCM' ||
                         type.contains('Intrus') ||
-                        type == 'Quiz Ã‰clair') ...[
+                        type == 'Quiz Éclair') ...[
                       _buildTextField(_c1, 'Question *', maxLines: 2),
                       _buildImageField(
                         _cImageUrl,
@@ -4590,18 +5102,16 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                       _buildTextField(
                         _c5,
                         type == 'QCM'
-                            ? 'Bonne rÃ©ponse (copiez le texte exact d\'une option) *'
+                            ? 'Bonne réponse (copiez le texte exact d\'une option) *'
                             : (type.contains('Intrus')
-                                ? 'L\'intrus (La bonne rÃ©ponse) *'
-                                : 'La bonne rÃ©ponse *'),
+                                ? 'L\'intrus (La bonne réponse) *'
+                                : 'La bonne réponse *'),
                       ),
                     ] else if (type == 'Vrai ou Faux') ...[
                       _buildTextField(_c1, 'Question *', maxLines: 2),
                       SwitchListTile(
                         title: Text(
-                          _boolAnswer
-                              ? 'RÃ©ponse : Vrai âœ“'
-                              : 'RÃ©ponse : Faux âœ—',
+                          _boolAnswer ? 'Réponse : Vrai ✓' : 'Réponse : Faux ✗',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
                         value: _boolAnswer,
@@ -4609,32 +5119,29 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                         activeColor: Colors.green,
                         inactiveThumbColor: Colors.red,
                       ),
-                    ] else if (type == 'ComplÃ©ter la Phrase') ...[
+                    ] else if (type == 'Compléter la Phrase') ...[
                       _buildTextField(
                         _c1,
                         'Phrase avec le mot manquant (ex: avec ___) *',
                         maxLines: 2,
                       ),
-                      _buildTextField(
-                        _c2,
-                        'Le mot manquant (Bonne rÃ©ponse) *',
-                      ),
+                      _buildTextField(_c2, 'Le mot manquant (Bonne réponse) *'),
                     ] else if (type == 'Qui suis-je ?') ...[
                       _buildTextField(_c1, 'La devinette *', maxLines: 3),
-                      _buildTextField(_c2, 'La rÃ©ponse *'),
+                      _buildTextField(_c2, 'La réponse *'),
                     ] else if (type == 'Le Mot Anagramme') ...[
                       _buildTextField(
                         _c1,
-                        'Mot solution (sera mÃ©langÃ© automatiquement) *',
+                        'Mot solution (sera mélangé automatiquement) *',
                       ),
-                    ] else if (type == 'Pendu amÃ©liorÃ©') ...[
-                      _buildTextField(_c1, 'Mot Ã  deviner (sans espaces) *'),
-                    ] else if (type == 'Mot MystÃ¨re') ...[
+                    ] else if (type == 'Pendu amélioré') ...[
+                      _buildTextField(_c1, 'Mot à deviner (sans espaces) *'),
+                    ] else if (type == 'Mot Mystère') ...[
                       _buildTextField(
                         _c1,
                         'Mot secret (min 4 lettres, sans espaces) *',
                       ),
-                    ] else if (type.contains('Deux VÃ©ritÃ©s')) ...[
+                    ] else if (type.contains('Deux Vérités')) ...[
                       const Text(
                         'Entrez 3 affirmations (2 vraies, 1 fausse) :',
                       ),
@@ -4663,13 +5170,13 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                         'Question (ex: Remettez dans l\'ordre)',
                       ),
                       const Text(
-                        'Entrez les Ã©vÃ©nements dans l\'ordre CHRONOLOGIQUE (du plus ancien au plus rÃ©cent) :',
+                        'Entrez les événements dans l\'ordre CHRONOLOGIQUE (du plus ancien au plus récent) :',
                       ),
                       ..._cEvents.asMap().entries.map(
                         (e) => _buildDynamicListItem(
                           _cEvents,
                           e.key,
-                          'Ã‰vÃ©nement ${e.key + 1} *',
+                          'Événement ${e.key + 1} *',
                         ),
                       ),
                       TextButton.icon(
@@ -4678,22 +5185,22 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                               () => _cEvents.add(TextEditingController()),
                             ),
                         icon: const Icon(Icons.add),
-                        label: const Text('Ajouter un Ã©vÃ©nement'),
+                        label: const Text('Ajouter un événement'),
                       ),
                     ] else if (type == 'Estimation') ...[
                       _buildTextField(
                         _c1,
-                        'Question (ex: En quelle annÃ©e...) *',
+                        'Question (ex: En quelle année...) *',
                         maxLines: 2,
                       ),
                       _buildTextField(
                         _c2,
-                        'RÃ©ponse exacte (Nombre uniquement) *',
+                        'Réponse exacte (Nombre uniquement) *',
                         isNumber: true,
                       ),
-                      _buildTextField(_c3, 'UnitÃ© (ex: ans, km, kg)'),
+                      _buildTextField(_c3, 'Unité (ex: ans, km, kg)'),
                     ] else if (type == 'Quiz par Indices') ...[
-                      _buildTextField(_c1, 'La rÃ©ponse finale Ã  trouver *'),
+                      _buildTextField(_c1, 'La réponse finale à trouver *'),
                       const Text(
                         'Entrez les indices (du plus difficile au plus facile) :',
                       ),
@@ -4721,7 +5228,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                         items: [
                           const DropdownMenuItem(
                             value: 'definitionToWord',
-                            child: Text('Mot <-> DÃ©finition (Texte)'),
+                            child: Text('Mot <-> Définition (Texte)'),
                           ),
                           if (type == 'Memory')
                             const DropdownMenuItem(
@@ -4786,7 +5293,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                                 if (_displayMode != 'imagePair')
                                   _buildTextField(
                                     _cPairDefs[e.key],
-                                    'DÃ©finition / Label 2 *',
+                                    'Définition / Label 2 *',
                                   ),
                                 _buildImageField(
                                   _cPairImgUrls[e.key],
@@ -4821,7 +5328,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
               child: ExpansionTile(
                 initiallyExpanded: false,
                 title: Text(
-                  'Options AvancÃ©es (Indices, Image, DifficultÃ©)',
+                  'Options Avancées (Indices, Image, Difficulté)',
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: Theme.of(context).colorScheme.primary,
@@ -4835,7 +5342,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                         Row(
                           children: [
                             const Text(
-                              'DifficultÃ© : ',
+                              'Difficulté : ',
                               style: TextStyle(fontWeight: FontWeight.bold),
                             ),
                             Text(
@@ -4861,7 +5368,11 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                           'Indice global pour aider le joueur (Optionnel)',
                           maxLines: 2,
                         ),
-                        if (type != 'QCM') // Le QCM gÃ¨re ses images plus haut
+                        _buildTextField(
+                          _cTimeLimit,
+                          'Temps imparti (en secondes, laisser vide pour défaut)',
+                        ),
+                        if (type != 'QCM') // Le QCM gère ses images plus haut
                           _buildImageField(
                             _cImageUrl,
                             'Image illustrant la question (Optionnel)',
@@ -5046,6 +5557,60 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
+  Future<void> _showDeleteAccountDialog(BuildContext context) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder:
+          (ctx) => AlertDialog(
+            title: const Text(
+              'Supprimer mon compte ?',
+              style: TextStyle(color: Colors.red),
+            ),
+            content: const Text(
+              'Êtes-vous sûr de vouloir supprimer définitivement votre compte et toutes vos données ? '
+              'Cette action est irréversible.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Annuler'),
+              ),
+              ElevatedButton(
+                onPressed: () => Navigator.of(ctx).pop(true),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                child: const Text(
+                  'Supprimer',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+    );
+
+    if (confirm == true) {
+      try {
+        final user = FirebaseAuth.instance.currentUser;
+        if (user != null) {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(user.uid)
+              .delete();
+          await user.delete();
+        }
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      } catch (e) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Erreur: Veuillez vous déconnecter et vous reconnecter avant de supprimer votre compte.',
+            ),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
@@ -5058,24 +5623,59 @@ class SettingsPage extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text(
-          'ParamÃ¨tres',
+          'Paramètres',
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         leading: const BackButton(color: Colors.white),
         flexibleSpace: Container(
           decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: gradientColors,
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
+            gradient: LinearGradient(colors: gradientColors),
           ),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // â”€â”€ Apparence â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+          // LANGUE
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
+            child: Text(
+              'LANGUE',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ),
+          Card(
+            child: Consumer<LocaleProvider>(
+              builder: (context, localeProvider, _) {
+                return DropdownButtonFormField<String>(
+                  value: localeProvider.locale,
+                  decoration: const InputDecoration(
+                    border: InputBorder.none,
+                    contentPadding: EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 4,
+                    ),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'fr', child: Text('Français')),
+                    DropdownMenuItem(value: 'en', child: Text('English')),
+                    DropdownMenuItem(value: 'es', child: Text('Español')),
+                  ],
+                  onChanged: (val) {
+                    if (val != null) localeProvider.setLocale(val);
+                  },
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // APPARENCE
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
             child: Text(
@@ -5106,7 +5706,7 @@ class SettingsPage extends StatelessWidget {
                 ),
                 const Divider(height: 1, indent: 56),
                 _ThemeOptionTile(
-                  label: 'SystÃ¨me',
+                  label: 'Système',
                   icon: Icons.brightness_auto_rounded,
                   selected: themeProvider.themeMode == ThemeMode.system,
                   onTap: () => themeProvider.setThemeMode(ThemeMode.system),
@@ -5115,11 +5715,12 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          // â”€â”€ Ã€ propos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+          // COMPTE
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8),
             child: Text(
-              'Ã€ PROPOS',
+              'COMPTE',
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
@@ -5129,13 +5730,26 @@ class SettingsPage extends StatelessWidget {
             ),
           ),
           Card(
-            child: ListTile(
-              leading: Icon(
-                Icons.info_outline,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-              title: const Text('QuizBot'),
-              subtitle: const Text('Version 1.0.0'),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.logout, color: Colors.orange),
+                  title: const Text('Se déconnecter'),
+                  onTap: () async {
+                    await FirebaseAuth.instance.signOut();
+                    Navigator.of(context).popUntil((route) => route.isFirst);
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.delete_forever, color: Colors.red),
+                  title: const Text(
+                    'Supprimer mon compte',
+                    style: TextStyle(color: Colors.red),
+                  ),
+                  onTap: () => _showDeleteAccountDialog(context),
+                ),
+              ],
             ),
           ),
         ],
@@ -5181,12 +5795,14 @@ class QuizLibraryContainerPage extends StatelessWidget {
   final bool isGuest;
   final Function(List<dynamic>, String, String?) onPlay;
   final Function(Map<String, dynamic>) onPlayOnline;
+  final Function(Map<String, dynamic>) onCompleteAI; // NOUVEAU
 
   const QuizLibraryContainerPage({
     super.key,
     required this.isGuest,
     required this.onPlay,
     required this.onPlayOnline,
+    required this.onCompleteAI, // NOUVEAU
   });
 
   @override
@@ -5210,7 +5826,7 @@ class QuizLibraryContainerPage extends StatelessWidget {
               tabs: const [
                 Tab(
                   icon: Icon(Icons.folder_shared_rounded),
-                  text: 'Mes CrÃ©ations',
+                  text: 'Mes Créations',
                 ),
                 Tab(
                   icon: Icon(Icons.explore_rounded),
@@ -5222,7 +5838,11 @@ class QuizLibraryContainerPage extends StatelessWidget {
           Expanded(
             child: TabBarView(
               children: [
-                AllQuizzesPage(onPlay: onPlay, isGuest: isGuest),
+                AllQuizzesPage(
+                  onPlay: onPlay,
+                  isGuest: isGuest,
+                  onCompleteAI: onCompleteAI,
+                ), // MODIFIÉ
                 SearchQuizzesPage(onPlay: onPlay, onPlayOnline: onPlayOnline),
               ],
             ),
@@ -5235,12 +5855,14 @@ class QuizLibraryContainerPage extends StatelessWidget {
 
 class AllQuizzesPage extends StatefulWidget {
   final Function(List<dynamic>, String, String?) onPlay;
+  final Function(Map<String, dynamic>) onCompleteAI; // NOUVEAU
   final bool isGuest;
 
   const AllQuizzesPage({
     super.key,
     required this.onPlay,
     required this.isGuest,
+    required this.onCompleteAI, // NOUVEAU
   });
   @override
   State<AllQuizzesPage> createState() => _AllQuizzesPageState();
@@ -5278,7 +5900,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, tempTitle),
-              child: const Text('CrÃ©er'),
+              child: const Text('Créer'),
             ),
           ],
         );
@@ -5288,7 +5910,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
     if (title != null && title.trim().isNotEmpty) {
       if (widget.isGuest) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Connectez-vous pour crÃ©er des jeux.')),
+          const SnackBar(content: Text('Connectez-vous pour créer des jeux.')),
         );
         return;
       }
@@ -5302,23 +5924,24 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
           'games': [],
           'timestamp': FieldValue.serverTimestamp(),
           'isPublic': false,
-          'theme': 'GÃ©nÃ©ral',
+          'theme': 'Général',
         });
         _loadQuizzes();
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
               content: Text(
-                'Jeu crÃ©Ã© ! Cliquez sur l\'icÃ´ne d\'Ã©dition pour y ajouter des mini-jeux.',
+                'Jeu créé ! Cliquez sur l\'icône d\'édition pour y ajouter des mini-jeux.',
               ),
             ),
           );
         }
       } catch (e) {
-        if (mounted)
+        if (mounted) {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('Erreur : $e')));
+        }
       }
     }
   }
@@ -5328,7 +5951,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Connectez-vous pour voir vos quiz sauvegardÃ©s.'),
+            content: Text('Connectez-vous pour voir vos quiz sauvegardés.'),
           ),
         );
       if (mounted) setState(() => _isLoading = false);
@@ -5370,9 +5993,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
       _loadQuizzes();
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Quiz mis en ${!currentStatus ? 'public' : 'privÃ©'} !',
-          ),
+          content: Text('Quiz mis en ${!currentStatus ? 'public' : 'privé'} !'),
         ),
       );
     } catch (e) {
@@ -5391,7 +6012,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
       _loadQuizzes();
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('Quiz supprimÃ© !')));
+      ).showSnackBar(const SnackBar(content: Text('Quiz supprimé !')));
     } catch (e) {
       ScaffoldMessenger.of(
         context,
@@ -5418,7 +6039,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
         _loadQuizzes();
         if (mounted)
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Quiz modifiÃ© avec succÃ¨s !')),
+            const SnackBar(content: Text('Quiz modifié avec succès !')),
           );
       } catch (e) {
         if (mounted)
@@ -5432,11 +6053,11 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent, // <-- AJOUTER CECI
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createNewGame,
         icon: const Icon(Icons.add),
-        label: const Text('CrÃ©er un jeu'),
+        label: const Text('Créer un jeu'),
         backgroundColor: Colors.indigo,
         foregroundColor: Colors.white,
       ),
@@ -5448,7 +6069,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                 child: Padding(
                   padding: EdgeInsets.all(16.0),
                   child: Text(
-                    'Vous n\'avez pas encore crÃ©Ã© de quiz. Allez dans l\'onglet "CrÃ©er" pour commencer !',
+                    'Vous n\'avez pas encore créé de quiz. Allez dans l\'onglet "Créer" pour commencer !',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 18),
                   ),
@@ -5504,8 +6125,10 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                             horizontal: 16.0,
                             vertical: 8.0,
                           ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          child: Wrap(
+                            spacing: 8.0,
+                            runSpacing: 8.0,
+                            alignment: WrapAlignment.center,
                             children: [
                               ElevatedButton.icon(
                                 onPressed: () {
@@ -5521,6 +6144,17 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                                   backgroundColor: Colors.green,
                                 ),
                               ),
+                              // NOUVEAU BOUTON ICI
+                              if (!widget.isGuest)
+                                ElevatedButton.icon(
+                                  onPressed: () => widget.onCompleteAI(quiz),
+                                  icon: const Icon(Icons.auto_awesome),
+                                  label: const Text('Compléter (IA)'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.quizPurple,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
                               if (!widget.isGuest)
                                 ElevatedButton.icon(
                                   onPressed:
@@ -5531,7 +6165,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                                   icon: Icon(
                                     isPublic ? Icons.public_off : Icons.public,
                                   ),
-                                  label: Text(isPublic ? 'PrivÃ©' : 'Public'),
+                                  label: Text(isPublic ? 'Privé' : 'Public'),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor:
                                         isPublic ? Colors.orange : Colors.blue,
@@ -5548,7 +6182,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                                         quiz['id'],
                                         quiz['games'] ?? [],
                                       ),
-                                  tooltip: 'Modifier ce quiz',
+                                  tooltip: 'Modifier manuellement',
                                 ),
                               if (!widget.isGuest)
                                 IconButton(
@@ -5656,7 +6290,7 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.transparent, // <-- AJOUTER CECI
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Column(
         children: [
           Padding(
@@ -5664,7 +6298,7 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
             child: TextField(
               controller: _searchController,
               decoration: const InputDecoration(
-                labelText: 'Rechercher par crÃ©ateur, contenu ou thÃ¨me',
+                labelText: 'Rechercher par créateur, contenu ou thème',
                 border: OutlineInputBorder(),
                 prefixIcon: Icon(Icons.search),
               ),
@@ -5677,7 +6311,7 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                     : (_filteredQuizzes.isEmpty
                         ? const Center(
                           child: Text(
-                            'Aucun quiz public trouvÃ© correspondant Ã  votre recherche.',
+                            'Aucun quiz public trouvé correspondant à votre recherche.',
                           ),
                         )
                         : ListView.builder(
@@ -5709,6 +6343,49 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                                 ),
                                 title: Text('Quiz de $userName'),
                                 subtitle: Text(textPreview),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.person,
+                                        color: Colors.indigo,
+                                      ),
+                                      tooltip: 'Voir le profil',
+                                      onPressed: () {
+                                        if (quiz['userId'] != null) {
+                                          Navigator.push(
+                                            context,
+                                            MaterialPageRoute(
+                                              builder:
+                                                  (_) => UserProfilePage(
+                                                    userId: quiz['userId'],
+                                                  ),
+                                            ),
+                                          );
+                                        }
+                                      },
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.report_problem_outlined,
+                                        color: Colors.redAccent,
+                                      ),
+                                      tooltip: 'Signaler',
+                                      onPressed: () {
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Le quiz a été signalé aux modérateurs.',
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
                                 children: [
                                   if (gamesInQuiz.isNotEmpty)
                                     Padding(
@@ -5790,6 +6467,20 @@ class LeaderboardPage extends StatefulWidget {
 class _LeaderboardPageState extends State<LeaderboardPage> {
   List<Map<String, dynamic>> _topPlayers = [];
   bool _isLoading = true;
+  String _selectedCountry = 'Monde';
+  final List<String> _countries = [
+    'Monde',
+    'France',
+    'Belgique',
+    'Suisse',
+    'Canada',
+    'Maroc',
+    'Algérie',
+  ];
+
+  // Données du joueur actuel
+  int? _myRank;
+  Map<String, dynamic>? _myScoreData;
 
   @override
   void initState() {
@@ -5798,34 +6489,82 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   }
 
   Future<void> _loadLeaderboard() async {
+    setState(() => _isLoading = true);
     try {
-      final snapshot =
-          await FirebaseFirestore.instance
-              .collection('users')
-              .orderBy('score', descending: true)
-              .limit(100)
-              .get();
+      Query query = FirebaseFirestore.instance
+          .collection('users')
+          .orderBy('score', descending: true);
 
-      if (mounted)
+      if (_selectedCountry != 'Monde') {
+        query = query.where('country', isEqualTo: _selectedCountry);
+      }
+
+      // Limite aux 100 premiers
+      final snapshot = await query.limit(100).get();
+
+      final currentUid = FirebaseAuth.instance.currentUser?.uid;
+      bool iAmInTop100 = false;
+
+      final List<Map<String, dynamic>> players = [];
+      for (int i = 0; i < snapshot.docs.length; i++) {
+        final data = snapshot.docs[i].data() as Map<String, dynamic>;
+        final isMe = snapshot.docs[i].id == currentUid;
+        if (isMe) iAmInTop100 = true;
+
+        players.add({
+          'uid': snapshot.docs[i].id,
+          'username': data['username'] ?? 'Inconnu',
+          'score': data['score'] ?? 0,
+          'isMe': isMe,
+        });
+      }
+
+      // Si l'utilisateur n'est pas dans le top 100, on récupère son rang exact
+      if (!iAmInTop100 && currentUid != null) {
+        final myDoc =
+            await FirebaseFirestore.instance
+                .collection('users')
+                .doc(currentUid)
+                .get();
+        if (myDoc.exists) {
+          final myData = myDoc.data()!;
+          final myScore = myData['score'] ?? 0;
+
+          Query rankQuery = FirebaseFirestore.instance
+              .collection('users')
+              .where('score', isGreaterThan: myScore);
+          if (_selectedCountry != 'Monde') {
+            rankQuery = rankQuery.where('country', isEqualTo: _selectedCountry);
+          }
+
+          final countSnapshot = await rankQuery.count().get();
+          _myRank =
+              countSnapshot.count! +
+              1; // Rang = nombre de personnes avec un meilleur score + 1
+
+          _myScoreData = {
+            'uid': currentUid,
+            'username': myData['username'] ?? 'Moi',
+            'score': myScore,
+            'isMe': true,
+          };
+        }
+      } else {
+        _myRank = null;
+        _myScoreData = null;
+      }
+
+      if (mounted) {
         setState(() {
-          _topPlayers =
-              snapshot.docs.map((doc) {
-                final data = doc.data();
-                return {
-                  'uid': doc.id,
-                  'username': data['username'] ?? 'Inconnu',
-                  'score': data['score'] ?? 0,
-                };
-              }).toList();
+          _topPlayers = players;
           _isLoading = false;
         });
+      }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erreur lors du chargement du classement : $e'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Erreur : $e')));
         setState(() => _isLoading = false);
       }
     }
@@ -5834,69 +6573,144 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        automaticallyImplyLeading: false,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        title: DropdownButton<String>(
+          value: _selectedCountry,
+          dropdownColor: Theme.of(context).cardColor,
+          items:
+              _countries
+                  .map(
+                    (c) => DropdownMenuItem(
+                      value: c,
+                      child: Text(
+                        c,
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  )
+                  .toList(),
+          onChanged: (val) {
+            if (val != null) {
+              setState(() => _selectedCountry = val);
+              _loadLeaderboard();
+            }
+          },
+        ),
+      ),
       body:
           _isLoading
               ? const Center(child: CircularProgressIndicator())
-              : (_topPlayers.isEmpty
-                  ? const Center(
-                    child: Text(
-                      'Aucun joueur dans le classement pour l\'instant.',
-                    ),
-                  )
-                  : ListView.builder(
-                    padding: const EdgeInsets.all(8.0),
-                    itemCount: _topPlayers.length,
-                    itemBuilder: (context, index) {
-                      final player = _topPlayers[index];
-                      return Card(
-                        margin: const EdgeInsets.symmetric(vertical: 8.0),
-                        elevation: 4,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+              : Column(
+                children: [
+                  Expanded(
+                    child:
+                        _topPlayers.isEmpty
+                            ? const Center(
+                              child: Text('Aucun joueur trouvé pour ce pays.'),
+                            )
+                            : ListView.builder(
+                              padding: const EdgeInsets.all(8.0),
+                              itemCount: _topPlayers.length,
+                              itemBuilder: (context, index) {
+                                final player = _topPlayers[index];
+                                final isMe = player['isMe'] == true;
+                                return Card(
+                                  color:
+                                      isMe
+                                          ? AppColors.primaryBlue.withOpacity(
+                                            0.1,
+                                          )
+                                          : null,
+                                  margin: const EdgeInsets.symmetric(
+                                    vertical: 4.0,
+                                  ),
+                                  child: ListTile(
+                                    leading: Text(
+                                      '#${index + 1}',
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.bold,
+                                      ),
+                                    ),
+                                    title: Text(
+                                      player['username'],
+                                      style: TextStyle(
+                                        fontSize: 18,
+                                        fontWeight:
+                                            isMe
+                                                ? FontWeight.bold
+                                                : FontWeight.normal,
+                                      ),
+                                    ),
+                                    trailing: Text(
+                                      '${player['score']} pts',
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.amber,
+                                      ),
+                                    ),
+                                    onTap:
+                                        () => Navigator.push(
+                                          context,
+                                          MaterialPageRoute(
+                                            builder:
+                                                (_) => UserProfilePage(
+                                                  userId: player['uid'],
+                                                ),
+                                          ),
+                                        ),
+                                  ),
+                                );
+                              },
+                            ),
+                  ),
+                  // Ligne épinglée si le joueur n'est pas dans le top 100
+                  if (_myScoreData != null && _myRank != null)
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).cardColor,
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Colors.black12,
+                            blurRadius: 10,
+                            offset: Offset(0, -5),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.all(8.0),
+                      child: Card(
+                        color: AppColors.primaryBlue.withOpacity(0.2),
                         child: ListTile(
                           leading: Text(
-                            '#${index + 1}',
+                            '#$_myRank',
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
+                              color: AppColors.primaryBlue,
                             ),
                           ),
                           title: Text(
-                            player['username']?.toString() ?? 'Inconnu',
+                            '${_myScoreData!['username']} (Vous)',
                             style: const TextStyle(
                               fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const Icon(Icons.star, color: Colors.amber),
-                              const SizedBox(width: 8),
-                              Text(
-                                '${player['score'] ?? 0}',
-                                style: const TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                            ],
+                          trailing: Text(
+                            '${_myScoreData!['score']} pts',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.amber,
+                            ),
                           ),
-                          onTap: () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                builder:
-                                    (context) =>
-                                        UserProfilePage(userId: player['uid']),
-                              ),
-                            );
-                          },
                         ),
-                      );
-                    },
-                  )),
+                      ),
+                    ),
+                ],
+              ),
     );
   }
 }
@@ -5917,7 +6731,7 @@ class _MyIQPageState extends State<MyIQPage> {
   List<String> _testedThemes = [];
   List<String> _untestedThemes = [];
   String _recommendation =
-      "Jouez Ã  plus de quiz pour une analyse plus approfondie !";
+      "Jouez à plus de quiz pour une analyse plus approfondie !";
   List<Map<String, dynamic>> _gameHistory = [];
 
   @override
@@ -5964,12 +6778,10 @@ class _MyIQPageState extends State<MyIQPage> {
 
       await _analyzeThemes(statsData);
     } catch (e) {
-      print('Erreur lors du chargement des donnÃ©es QI : $e');
+      print('Erreur lors du chargement des données QI : $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Erreur lors du chargement des donnÃ©es : $e'),
-          ),
+          SnackBar(content: Text('Erreur lors du chargement des données : $e')),
         );
       }
     }
@@ -5985,16 +6797,16 @@ class _MyIQPageState extends State<MyIQPage> {
     _untestedThemes.clear();
     Set<String> allPossibleThemes = {
       'Histoire',
-      'GÃ©ographie',
+      'Géographie',
       'Sciences',
-      'LittÃ©rature',
+      'Littérature',
       'Art',
       'Musique',
-      'CinÃ©ma',
+      'Cinéma',
       'Sports',
       'Technologie',
       'Politique',
-      'Ã‰conomie',
+      'Économie',
       'Animaux',
       'Nature',
       'Cuisine',
@@ -6020,7 +6832,7 @@ class _MyIQPageState extends State<MyIQPage> {
   void _generateRecommendation(Map<String, dynamic> statsData) {
     if (statsData.isEmpty) {
       _recommendation =
-          "Commencez Ã  jouer pour que l'IA puisse analyser vos compÃ©tences !";
+          "Commencez à jouer pour que l'IA puisse analyser vos compétences !";
       return;
     }
 
@@ -6050,7 +6862,7 @@ class _MyIQPageState extends State<MyIQPage> {
 
     if (weakTheme.isNotEmpty && minSuccessRate < 0.6) {
       recommendations.add(
-        "ðŸ“š Point faible dÃ©tectÃ© en '$weakTheme' (score ajustÃ© : ${(minSuccessRate * 100).toStringAsFixed(0)}%). EntraÃ®nez-vous davantage !",
+        "📚 Point faible détecté en '$weakTheme' (score ajusté : ${(minSuccessRate * 100).toStringAsFixed(0)}%). Entraînez-vous davantage !",
       );
     }
 
@@ -6058,31 +6870,31 @@ class _MyIQPageState extends State<MyIQPage> {
         maxSuccessRate >= 0.8 &&
         strongTheme != weakTheme) {
       recommendations.add(
-        "â­ Vous excellez en '$strongTheme' (score ajustÃ© : ${(maxSuccessRate * 100).toStringAsFixed(0)}%). Continuez !",
+        "⭐ Vous excellez en '$strongTheme' (score ajusté : ${(maxSuccessRate * 100).toStringAsFixed(0)}%). Continuez !",
       );
     }
 
     if (_untestedThemes.isNotEmpty) {
       final unexplored = _untestedThemes.take(2).join(' et ');
       recommendations.add(
-        "ðŸŒ Explorez de nouveaux thÃ¨mes : $unexplored pour amÃ©liorer votre QI global !",
+        "🌐 Explorez de nouveaux thèmes : $unexplored pour améliorer votre QI global !",
       );
     }
 
     if (_iq >= 130) {
       recommendations.add(
-        "ðŸ§  QI exceptionnel ! Essayez des quiz de difficultÃ© maximale pour vous challenger.",
+        "🧠 QI exceptionnel ! Essayez des quiz de difficulté maximale pour vous challenger.",
       );
     } else if (_iq < 90) {
       recommendations.add(
-        "ðŸ’¡ Jouez rÃ©guliÃ¨rement Ã  des quiz variÃ©s pour dÃ©velopper vos connaissances.",
+        "💡 Jouez régulièrement à des quiz variés pour développer vos connaissances.",
       );
     }
 
     _recommendation =
         recommendations.isNotEmpty
             ? recommendations.join('\n\n')
-            : "Excellent travail ! Continuez Ã  jouer pour maintenir votre QI Ã©levÃ©.";
+            : "Excellent travail ! Continuez à jouer pour maintenir votre QI élevé.";
   }
 
   @override
@@ -6102,8 +6914,17 @@ class _MyIQPageState extends State<MyIQPage> {
                         padding: const EdgeInsets.all(16.0),
                         child: Column(
                           children: [
+                            // NOUVEAU : Message de bienvenue
+                            Text(
+                              'Bonjour ${FirebaseAuth.instance.currentUser?.displayName ?? "Joueur"} 👋',
+                              style: const TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
                             const Text(
-                              'Votre QI de culture gÃ©nÃ©rale',
+                              'Votre QI de culture générale',
                               style: TextStyle(
                                 fontSize: 22,
                                 fontWeight: FontWeight.bold,
@@ -6118,12 +6939,6 @@ class _MyIQPageState extends State<MyIQPage> {
                                 fontWeight: FontWeight.bold,
                                 color: Colors.deepOrange,
                               ),
-                            ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'Plus vous jouez Ã  des quiz variÃ©s, plus votre QI est affinÃ© !',
-                              textAlign: TextAlign.center,
-                              style: TextStyle(fontStyle: FontStyle.italic),
                             ),
                           ],
                         ),
@@ -6155,7 +6970,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             const SizedBox(height: 16),
                             const Divider(),
                             const Text(
-                              'Vos points forts (thÃ¨mes jouÃ©s au moins 2 fois, taux de rÃ©ussite > 70%) :',
+                              'Vos points forts (thèmes joués au moins 2 fois, taux de réussite > 70%) :',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -6163,7 +6978,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             ),
                             _themesPerformance.isEmpty
                                 ? const Text(
-                                  'Aucun thÃ¨me analysÃ© pour l\'instant.',
+                                  'Aucun thème analysé pour l\'instant.',
                                 )
                                 : Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -6201,7 +7016,7 @@ class _MyIQPageState extends State<MyIQPage> {
                                               ),
                                               title: Text(entry.key),
                                               subtitle: Text(
-                                                'Taux de rÃ©ussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz jouÃ©s)',
+                                                'Taux de réussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz joués)',
                                               ),
                                             );
                                           })
@@ -6210,7 +7025,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             const SizedBox(height: 16),
                             const Divider(),
                             const Text(
-                              'Vos points Ã  amÃ©liorer (thÃ¨mes jouÃ©s au moins 2 fois, taux de rÃ©ussite < 70%) :',
+                              'Vos points à améliorer (thèmes joués au moins 2 fois, taux de réussite < 70%) :',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -6218,7 +7033,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             ),
                             _themesPerformance.isEmpty
                                 ? const Text(
-                                  'Aucun thÃ¨me analysÃ© pour l\'instant.',
+                                  'Aucun thème analysé pour l\'instant.',
                                 )
                                 : Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -6256,7 +7071,7 @@ class _MyIQPageState extends State<MyIQPage> {
                                               ),
                                               title: Text(entry.key),
                                               subtitle: Text(
-                                                'Taux de rÃ©ussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz jouÃ©s)',
+                                                'Taux de réussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz joués)',
                                               ),
                                             );
                                           })
@@ -6265,7 +7080,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             const SizedBox(height: 16),
                             const Divider(),
                             const Text(
-                              'ThÃ¨mes non testÃ©s :',
+                              'Thèmes non testés :',
                               style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -6273,7 +7088,7 @@ class _MyIQPageState extends State<MyIQPage> {
                             ),
                             _untestedThemes.isEmpty
                                 ? const Text(
-                                  'Vous avez explorÃ© tous les thÃ¨mes connus !',
+                                  'Vous avez exploré tous les thèmes connus !',
                                 )
                                 : Wrap(
                                   spacing: 8.0,
@@ -6487,7 +7302,7 @@ class _FriendsPageState extends State<FriendsPage> {
       _searchUsers(_searchController.text);
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Demande d\'ami envoyÃ©e !')),
+          const SnackBar(content: Text('Demande d\'ami envoyée !')),
         );
     } catch (e) {
       print('Erreur lors de l\'envoi de la demande: $e');
@@ -6525,7 +7340,7 @@ class _FriendsPageState extends State<FriendsPage> {
       _loadFriendsAndRequests();
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Demande acceptÃ©e ! Vous Ãªtes amis.')),
+          const SnackBar(content: Text('Demande acceptée ! Vous êtes amis.')),
         );
     } catch (e) {
       print('Erreur lors de l\'acceptation: $e');
@@ -6546,7 +7361,7 @@ class _FriendsPageState extends State<FriendsPage> {
       if (mounted)
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Demande refusÃ©e.')));
+        ).showSnackBar(const SnackBar(content: Text('Demande refusée.')));
     } catch (e) {
       print('Erreur lors du refus: $e');
       if (mounted)
@@ -6589,7 +7404,7 @@ class _FriendsPageState extends State<FriendsPage> {
       if (mounted)
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Ami supprimÃ©.')));
+        ).showSnackBar(const SnackBar(content: Text('Ami supprimé.')));
     } catch (e) {
       print('Erreur lors de la suppression d\'ami: $e');
       if (mounted)
@@ -6668,7 +7483,7 @@ class _FriendsPageState extends State<FriendsPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'Demandes d\'amis reÃ§ues',
+                              'Demandes d\'amis reçues',
                               style: TextStyle(
                                 fontSize: 20,
                                 fontWeight: FontWeight.bold,
@@ -6776,7 +7591,7 @@ class _FriendsPageState extends State<FriendsPage> {
         );
       case 'pending_sent':
         return Chip(
-          label: const Text('EnvoyÃ©e'),
+          label: const Text('Envoyée'),
           backgroundColor: Colors.orange.shade100,
         );
       case 'pending_received':
@@ -6825,7 +7640,7 @@ class UserProfilePage extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           if (!snapshot.hasData || !snapshot.data!.exists) {
-            return const Center(child: Text('Utilisateur non trouvÃ©.'));
+            return const Center(child: Text('Utilisateur non trouvé.'));
           }
 
           final userData = snapshot.data!.data() as Map<String, dynamic>;
@@ -6893,7 +7708,7 @@ class UserProfilePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 24),
                 const Text(
-                  'Quiz Publics CrÃ©Ã©s',
+                  'Quiz Publics Créés',
                   style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 const Divider(),
@@ -6937,7 +7752,7 @@ class UserProfilePage extends StatelessWidget {
                               color: Colors.indigo,
                             ),
                             title: Text(
-                              'ThÃ¨me: ${quizData['theme'] ?? 'GÃ©nÃ©ral'}',
+                              'Thème: ${quizData['theme'] ?? 'Général'}',
                             ),
                             subtitle: Text(textPreview),
                             trailing: const Icon(Icons.play_arrow),
@@ -6945,7 +7760,7 @@ class UserProfilePage extends StatelessWidget {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(
                                   content: Text(
-                                    'La fonction "Jouer" depuis un profil sera bientÃ´t disponible !',
+                                    'La fonction "Jouer" depuis un profil sera bientôt disponible !',
                                   ),
                                 ),
                               );
@@ -6973,6 +7788,8 @@ class OnlineRoomSettings {
   final String showLeaderboardPolicy;
   final bool isPublic;
   final int maxPlayers;
+  final bool disableTimer;
+  final bool useGameSpecificTimers;
 
   final DisplayMode qcmQuestionMode;
   final DisplayMode qcmAnswerMode;
@@ -6987,6 +7804,8 @@ class OnlineRoomSettings {
     required this.maxPlayers,
     required this.qcmQuestionMode,
     required this.qcmAnswerMode,
+    this.disableTimer = false,
+    this.useGameSpecificTimers = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -6998,6 +7817,8 @@ class OnlineRoomSettings {
       'showLeaderboardPolicy': showLeaderboardPolicy,
       'isPublic': isPublic,
       'maxPlayers': maxPlayers,
+      'disableTimer': disableTimer,
+      'useGameSpecificTimers': useGameSpecificTimers,
 
       'qcmQuestionMode': qcmQuestionMode.name,
       'qcmAnswerMode': qcmAnswerMode.name,
@@ -7020,6 +7841,8 @@ class OnlineRoomSettings {
       showLeaderboardPolicy: map['showLeaderboardPolicy'] ?? 'endOfGame',
       isPublic: map['isPublic'] ?? false,
       maxPlayers: map['maxPlayers'] ?? 100,
+      disableTimer: map['disableTimer'] ?? false,
+      useGameSpecificTimers: map['useGameSpecificTimers'] ?? false,
 
       qcmQuestionMode: displayModeFromString(
         map['qcmQuestionMode'],
@@ -7035,9 +7858,9 @@ class OnlineRoomSettings {
 
 class OnlineOptionsPage extends StatefulWidget {
   final String playerName;
-  final Function(OnlineRoomSettings, Map<String, dynamic>?) onCreateRoom;
+  final Function(OnlineRoomSettings, Map<String, dynamic>?, bool) onCreateRoom;
   final Function(String) onJoinRoom;
-  final Future<bool> Function(String?) onFindPublicGame; // <-- ModifiÃ©
+  final Future<bool> Function(String?) onFindPublicGame; // <-- Modifié
   final bool isGuest;
   final Map<String, dynamic>? initialQuiz;
   final DisplayMode qcmQuestionMode;
@@ -7072,8 +7895,11 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
   String _memoryMode = 'turnBased';
   String _showAnswerPolicy = 'endOfQuestion';
   String _showLeaderboardPolicy = 'afterQuestion';
-  bool _isPublic = true; // Rendu public par dÃ©faut (plus logique)
+  bool _isPublic = true;
   int _maxPlayers = 10;
+  bool _disableTimer = false;
+  bool _useGameSpecificTimers = false;
+  bool _saveToQuiz = false;
 
   Map<String, dynamic>? _selectedQuiz;
   List<Map<String, dynamic>> _quizzes = [];
@@ -7082,18 +7908,139 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
   @override
   void initState() {
     super.initState();
-    _currentUser = FirebaseAuth.instance.currentUser;
+    _initUser();
+  }
 
-    if (widget.initialQuiz != null) {
-      _selectedQuiz = widget.initialQuiz;
-      _showCreateRoom = true;
-      _isLoading = false;
-    } else if (widget.isGuest) {
-      // Un invitÃ© ne peut que rejoindre
-      _showJoinRoom = true;
-      _isLoading = false;
-    } else {
-      _loadQuizzes();
+  void _initUser() async {
+    _currentUser = FirebaseAuth.instance.currentUser;
+    if (_currentUser == null) {
+      try {
+        UserCredential creds = await FirebaseAuth.instance.signInAnonymously();
+        _currentUser = creds.user;
+      } catch (e) {
+        print("Erreur de connexion anonyme: $e");
+      }
+    }
+    if (mounted) {
+      if (widget.initialQuiz != null) {
+        setState(() {
+          _selectedQuiz = widget.initialQuiz;
+          _showCreateRoom = true;
+          _isLoading = false;
+        });
+      } else if (widget.isGuest) {
+        setState(() {
+          _showJoinRoom = true;
+          _isLoading = false;
+        });
+      } else {
+        _loadQuizzes();
+      }
+    }
+  }
+
+  Future<void> _showTimersPopup() async {
+    if (_selectedQuiz == null) return;
+    final games = _selectedQuiz!['games'] as List;
+    bool tempSaveToQuiz = _saveToQuiz;
+
+    final result = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setPopupState) {
+            return AlertDialog(
+              title: const Text('Temps par jeu (sec)'),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: games.length,
+                        itemBuilder: (context, index) {
+                          final game = games[index];
+                          final type = game['type'];
+                          final limit = game['timeLimit']?.toString() ?? '20';
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 8.0),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    'Jeu ${index + 1} - $type',
+                                    style: const TextStyle(fontSize: 14),
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: 60,
+                                  child: TextFormField(
+                                    initialValue: limit,
+                                    keyboardType: TextInputType.number,
+                                    decoration: const InputDecoration(
+                                      isDense: true,
+                                      contentPadding: EdgeInsets.all(8),
+                                    ),
+                                    onChanged: (val) {
+                                      final newLimit = int.tryParse(val);
+                                      if (newLimit != null) {
+                                        setPopupState(() {
+                                          game['timeLimit'] = newLimit;
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const Divider(),
+                      CheckboxListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text(
+                          'Sauvegarder ces timers pour ce quiz',
+                        ),
+                        value: tempSaveToQuiz,
+                        activeColor: Colors.orange,
+                        onChanged: (v) {
+                          setPopupState(() => tempSaveToQuiz = v ?? false);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Annuler'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Valider'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == true) {
+      setState(() {
+        _saveToQuiz = tempSaveToQuiz;
+        _useGameSpecificTimers = true;
+      });
+    } else if (!_useGameSpecificTimers) {
+      setState(() {
+        _useGameSpecificTimers = false;
+      });
     }
   }
 
@@ -7135,12 +8082,12 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
   Future<void> _startPublicSearch() async {
     final List<String> themes = [
       'Histoire',
-      'GÃ©ographie',
+      'Géographie',
       'Sciences',
-      'LittÃ©rature',
+      'Littérature',
       'Art',
       'Musique',
-      'CinÃ©ma',
+      'Cinéma',
       'Sports',
       'Technologie',
       'Animaux',
@@ -7159,7 +8106,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
             mainAxisSize: MainAxisSize.min,
             children: [
               const Text(
-                'Choisissez un thÃ¨me',
+                'Choisissez un thème',
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
@@ -7172,7 +8119,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                         color: AppColors.primaryBlue,
                       ),
                       title: const Text(
-                        'N\'importe quel thÃ¨me',
+                        'N\'importe quel thème',
                         style: TextStyle(fontWeight: FontWeight.bold),
                       ),
                       onTap: () => Navigator.of(context).pop('any'),
@@ -7197,7 +8144,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
       setState(() {
         _isSearchingPublic = true;
       });
-      // DÃ©lai artificiel pour l'effet visuel du radar
+      // Délai artificiel pour l'effet visuel du radar
       await Future.delayed(const Duration(milliseconds: 1500));
 
       bool found = await widget.onFindPublicGame(selectedTheme);
@@ -7403,8 +8350,8 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
             if (!widget.isGuest && !_showCreateRoom && !_showJoinRoom) ...[
               const SizedBox(height: 10),
               _buildMenuCard(
-                title: 'CrÃ©er une partie',
-                subtitle: 'HÃ©bergez votre propre quiz',
+                title: 'Créer une partie',
+                subtitle: 'Hébergez votre propre quiz',
                 icon: Icons.add_moderator_rounded,
                 gradient: [const Color(0xFF6C3FC7), const Color(0xFF4A148C)],
                 onTap: () => setState(() => _showCreateRoom = true),
@@ -7448,7 +8395,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      'Entrez le code Ã  6 chiffres fourni par l\'hÃ´te',
+                      'Entrez le code à 6 chiffres fourni par l\'hôte',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey),
                     ),
@@ -7504,7 +8451,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
               ).animate().fadeIn().scale(begin: const Offset(0.9, 0.9)),
             ],
 
-            // --- CRÃ‰ER UNE PARTIE ---
+            // --- CRÉER UNE PARTIE ---
             if (_showCreateRoom && !widget.isGuest)
               ...[
                 if (_isLoading)
@@ -7528,7 +8475,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                             ),
                             SizedBox(width: 10),
                             Text(
-                              '1. SÃ©lection du Quiz',
+                              '1. Sélection du Quiz',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -7539,7 +8486,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                         const SizedBox(height: 16),
                         if (_quizzes.isEmpty && widget.initialQuiz == null)
                           const Text(
-                            'Aucun quiz personnel trouvÃ©. CrÃ©ez-en un !',
+                            'Aucun quiz personnel trouvé. Créez-en un !',
                             style: TextStyle(color: Colors.red),
                           )
                         else
@@ -7587,7 +8534,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                   ),
                   const SizedBox(height: 16),
 
-                  // SECTION 2 : VisibilitÃ©
+                  // SECTION 2 : Visibilité
                   StyledCard(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -7597,7 +8544,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                             Icon(Icons.public, color: Colors.green),
                             SizedBox(width: 10),
                             Text(
-                              '2. VisibilitÃ©',
+                              '2. Visibilité',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -7636,7 +8583,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                   ),
                   const SizedBox(height: 16),
 
-                  // SECTION 3 : RÃ¨gles
+                  // SECTION 3 : Règles
                   StyledCard(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -7646,7 +8593,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                             Icon(Icons.rule_rounded, color: Colors.orange),
                             SizedBox(width: 10),
                             Text(
-                              '3. RÃ¨gles du jeu',
+                              '3. Règles du jeu',
                               style: TextStyle(
                                 fontSize: 18,
                                 fontWeight: FontWeight.bold,
@@ -7655,25 +8602,86 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                           ],
                         ),
                         const SizedBox(height: 16),
-                        Text(
-                          'Temps par question : ${_questionDuration}s',
-                          style: const TextStyle(fontWeight: FontWeight.bold),
-                        ),
-                        Slider(
-                          value: _questionDuration.toDouble(),
-                          min: 10,
-                          max: 120,
-                          divisions: 11,
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Désactiver le timer'),
+                          subtitle: const Text('Jouer sans limite de temps'),
+                          value: _disableTimer,
                           activeColor: Colors.orange,
                           onChanged:
-                              (v) =>
-                                  setState(() => _questionDuration = v.toInt()),
+                              (v) => setState(() {
+                                _disableTimer = v;
+                                if (v) _useGameSpecificTimers = false;
+                              }),
                         ),
+                        if (!_disableTimer) ...[
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('Temps par jeu'),
+                            subtitle: const Text(
+                              'Personnaliser le timer pour chaque jeu sélectionné',
+                            ),
+                            value: _useGameSpecificTimers,
+                            activeColor: Colors.orange,
+                            onChanged: (v) {
+                              if (v) {
+                                if (_selectedQuiz == null) {
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text(
+                                        'Veuillez d\'abord sélectionner un quiz !',
+                                      ),
+                                      backgroundColor: Colors.orange,
+                                    ),
+                                  );
+                                  return;
+                                }
+                                // Ouvre immédiatement la fenêtre de réglage des timers lors de l'activation
+                                _showTimersPopup();
+                              } else {
+                                setState(() => _useGameSpecificTimers = false);
+                              }
+                            },
+                          ),
+                          if (_useGameSpecificTimers &&
+                              _selectedQuiz != null) ...[
+                            const SizedBox(height: 10),
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: TextButton.icon(
+                                onPressed: _showTimersPopup,
+                                icon: const Icon(Icons.timer),
+                                label: const Text(
+                                  'Modifier les timers spécifiques',
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (!_useGameSpecificTimers) ...[
+                            Text(
+                              'Temps global par question : ${_questionDuration}s',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            Slider(
+                              value: _questionDuration.toDouble(),
+                              min: 10,
+                              max: 120,
+                              divisions: 11,
+                              activeColor: Colors.orange,
+                              onChanged:
+                                  (v) => setState(
+                                    () => _questionDuration = v.toInt(),
+                                  ),
+                            ),
+                          ],
+                        ],
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Attendre tous les joueurs'),
                           subtitle: const Text(
-                            'Passe Ã  la suite si tout le monde a rÃ©pondu',
+                            'Passe à la suite si tout le monde a répondu',
                           ),
                           value: _waitForAllPlayers,
                           activeColor: Colors.orange,
@@ -7682,7 +8690,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                         ),
                         const Divider(),
                         const Text(
-                          'Afficher les rÃ©ponses :',
+                          'Afficher les réponses :',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                         Row(
@@ -7691,7 +8699,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                               child: RadioListTile<String>(
                                 contentPadding: EdgeInsets.zero,
                                 title: const Text(
-                                  'ImmÃ©diat',
+                                  'Immédiat',
                                   style: TextStyle(fontSize: 13),
                                 ),
                                 value: 'immediate',
@@ -7729,7 +8737,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                     child: ElevatedButton.icon(
                       icon: const Icon(Icons.rocket_launch_rounded),
                       label: const Text(
-                        'CrÃ©er et Lancer',
+                        'Créer et Lancer',
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
@@ -7749,8 +8757,14 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                                   maxPlayers: _maxPlayers,
                                   qcmQuestionMode: widget.qcmQuestionMode,
                                   qcmAnswerMode: widget.qcmAnswerMode,
+                                  disableTimer: _disableTimer,
+                                  useGameSpecificTimers: _useGameSpecificTimers,
                                 );
-                                widget.onCreateRoom(settings, _selectedQuiz!);
+                                widget.onCreateRoom(
+                                  settings,
+                                  _selectedQuiz!,
+                                  _saveToQuiz,
+                                );
                               },
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.quizPurple,
@@ -7796,7 +8810,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
   Timer? _countdownTimer;
   int _countdown = 10;
   Map<String, dynamic>? _roomData;
-  bool _gameStarted = false; // Verrou pour Ã©viter la navigation double
+  bool _gameStarted = false; // Verrou pour éviter la navigation double
 
   @override
   void initState() {
@@ -7833,9 +8847,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 if (pName != widget.playerName && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text(
-                        'ðŸƒâ€â™‚ï¸ $pName a quittÃ© la partie.',
-                      ),
+                      content: Text('🏃 $pName a quitté la partie.'),
                       backgroundColor: Colors.orange,
                       duration: const Duration(seconds: 2),
                     ),
@@ -7848,7 +8860,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 if (pName != widget.playerName && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('ðŸ‘‹ $pName a rejoint la partie.'),
+                      content: Text('👋 $pName a rejoint la partie.'),
                       backgroundColor: Colors.green,
                       duration: const Duration(seconds: 2),
                     ),
@@ -7862,7 +8874,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 _players = newPlayers;
               });
 
-            // La navigation se fait quand started passe Ã  true
+            // La navigation se fait quand started passe à true
             if (data['started'] == true) {
               _navigateToGame();
               return;
@@ -7870,12 +8882,12 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
 
             if (data['active'] == false && data['started'] == false) {
               _handleRoomClosure(
-                message: 'La partie a Ã©tÃ© arrÃªtÃ©e par l\'hÃ´te',
+                message: 'La partie a été arrêtée par l\'hôte',
               );
               return;
             }
 
-            // Gestion du compte Ã  rebours synchronisÃ© via Firestore
+            // Gestion du compte à rebours synchronisé via Firestore
             if (data.containsKey('countdownStartTime')) {
               final startTime =
                   (data['countdownStartTime'] as Timestamp).toDate();
@@ -7888,7 +8900,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                   _countdown = newCountdown;
                 });
 
-              // Seul l'hÃ´te dÃ©marre la partie quand le compte Ã  rebours atteint 0
+              // Seul l'hôte démarre la partie quand le compte à rebours atteint 0
               if (newCountdown <= 0 &&
                   widget.isHost &&
                   _countdownTimer == null) {
@@ -7901,7 +8913,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 });
             }
 
-            // Gestion du dÃ©marrage automatique cÃ´tÃ© hÃ´te quand la salle est pleine
+            // Gestion du démarrage automatique côté hôte quand la salle est pleine
             if (widget.isHost) {
               if (_players.length >= widget.maxPlayers &&
                   _countdownTimer == null &&
@@ -7914,9 +8926,9 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
             }
           },
           onError: (error) {
-            print("Erreur lors de l'Ã©coute de la salle: $error");
+            print("Erreur lors de l'écoute de la salle: $error");
             if (_isMounted)
-              _handleRoomClosure(message: 'Erreur de connexion Ã  la salle.');
+              _handleRoomClosure(message: 'Erreur de connexion à la salle.');
           },
         );
   }
@@ -7997,7 +9009,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
   }
 
   void _handleRoomClosure({
-    String message = 'La salle n\'existe plus ou a Ã©tÃ© fermÃ©e.',
+    String message = 'La salle n\'existe plus ou a été fermée.',
   }) {
     if (!_isMounted || _gameStarted) return;
     _roomSubscription.cancel();
@@ -8035,16 +9047,20 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
         FirebaseFirestore.instance
             .collection('onlineRooms')
             .doc(widget.roomId)
-            .update({'players.${widget.playerName}': FieldValue.delete()});
+            .update({
+              FieldPath(['players', widget.playerName]): FieldValue.delete(),
+            });
       }
     } catch (e) {
-      // Ã‰chec silencieux, le Heartbeat fera le travail de toute faÃ§on.
+      // Échec silencieux, le Heartbeat fera le travail de toute façon.
     }
   }
 
   void _startGame() async {
+    _countdownTimer?.cancel();
+    _countdownTimer = null;
     if (!widget.isHost) return;
-    // Utiliser une transaction pour Ã©viter les doubles dÃ©marrages
+    // Utiliser une transaction pour éviter les doubles démarrages
     final roomRef = FirebaseFirestore.instance
         .collection('onlineRooms')
         .doc(widget.roomId);
@@ -8052,7 +9068,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
       final snap = await transaction.get(roomRef);
       if (!snap.exists) return;
       final data = snap.data() as Map<String, dynamic>;
-      if (data['started'] == true) return; // DÃ©jÃ  dÃ©marrÃ©
+      if (data['started'] == true) return; // Déjà démarré
       transaction.update(roomRef, {'started': true});
     });
   }
@@ -8068,7 +9084,9 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
       await FirebaseFirestore.instance
           .collection('onlineRooms')
           .doc(widget.roomId)
-          .update({'players.${widget.playerName}': FieldValue.delete()});
+          .update({
+            FieldPath(['players', widget.playerName]): FieldValue.delete(),
+          });
     }
     if (mounted) Navigator.of(context).pop();
   }
@@ -8078,7 +9096,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
     bool isFull = _players.length == widget.maxPlayers;
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) {
+      onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
         _leaveRoom();
       },
@@ -8134,7 +9152,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                                 ClipboardData(text: widget.inviteCode),
                               );
                               ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(content: Text('Code copiÃ© !')),
+                                const SnackBar(content: Text('Code copié !')),
                               );
                             },
                           ),
@@ -8174,7 +9192,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                             trailing:
                                 playerData['isHost'] == true
                                     ? const Chip(
-                                      label: Text('HÃ´te'),
+                                      label: Text('Hôte'),
                                       backgroundColor: Colors.amber,
                                     )
                                     : null,
@@ -8189,7 +9207,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 Column(
                   children: [
                     Text(
-                      'La partie ${isFull ? 'est pleine !' : ''} DÃ©marrage dans...',
+                      'La partie ${isFull ? 'est pleine !' : ''} Démarrage dans...',
                       style: const TextStyle(fontSize: 16, color: Colors.green),
                     ),
                     Text(
@@ -8204,14 +9222,14 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
               else if (widget.isHost)
                 ElevatedButton(
                   onPressed: _players.length >= 2 ? _startCountdown : null,
-                  child: const Text('DÃ©marrer la partie (min 2 joueurs)'),
+                  child: const Text('Démarrer la partie (min 2 joueurs)'),
                 )
               else
                 const Column(
                   children: [
                     CircularProgressIndicator(),
                     SizedBox(height: 16),
-                    Text('En attente de l\'hÃ´te ou d\'autres joueurs...'),
+                    Text('En attente de l\'hôte ou d\'autres joueurs...'),
                   ],
                 ),
             ],
@@ -8272,9 +9290,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   Map<String, String?> _onlineMatches = {};
   List<String>? _chronologyEvents;
   int _currentChronologyIndex = -1;
+  int _currentAnagramIndex = -1;
+  String? _currentAnagram;
   bool _isMatchSubmitted = false;
 
-  // Suivi du nombre de joueurs actifs pour gÃ©rer les dÃ©connexions
+  // Suivi du nombre de joueurs actifs pour gérer les déconnexions
   int _lastKnownPlayerCount = 0;
   bool _isNavigatingToResults = false;
 
@@ -8300,6 +9320,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     _timer?.cancel();
     _answerController.dispose();
     _quizEclairTimeLeft.dispose();
+    _remainingTime.dispose();
     super.dispose();
   }
 
@@ -8321,10 +9342,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         FirebaseFirestore.instance
             .collection('onlineRooms')
             .doc(widget.roomId)
-            .update({'players.${widget.playerName}': FieldValue.delete()});
+            .update({
+              FieldPath(['players', widget.playerName]): FieldValue.delete(),
+            });
       }
     } catch (e) {
-      // Ã‰chec silencieux, le Heartbeat fera le travail de toute faÃ§on.
+      // Échec silencieux, le Heartbeat fera le travail de toute façon.
     }
   }
 
@@ -8340,7 +9363,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             if (!snapshot.exists || snapshot.data()?['active'] == false) {
               if (mounted && !_isNavigatingToResults) {
                 _navigateToResultsPage(
-                  Map<String, dynamic>.from(snapshot.data()?['players'] ?? {}),
+                  Map<String, dynamic>.from(
+                    (snapshot.data()?['players'] as Map<String, dynamic>?) ??
+                        (_players.isNotEmpty ? _players : {}),
+                  ),
                 );
               }
               return;
@@ -8364,9 +9390,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                 if (pName != widget.playerName && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text(
-                        'ðŸƒâ€â™‚ï¸ $pName a quittÃ© la partie.',
-                      ),
+                      content: Text('🏃 $pName a quitté la partie.'),
                       backgroundColor: Colors.orange,
                       duration: const Duration(seconds: 2),
                     ),
@@ -8379,7 +9403,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                 if (pName != widget.playerName && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
-                      content: Text('ðŸ‘‹ $pName a rejoint la partie.'),
+                      content: Text('👋 $pName a rejoint la partie.'),
                       backgroundColor: Colors.green,
                       duration: const Duration(seconds: 2),
                     ),
@@ -8428,7 +9452,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                 }
               });
 
-            // Si un joueur a quittÃ© pendant la partie, vÃ©rifier si on peut avancer
+            // Si un joueur a quitté pendant la partie, vérifier si on peut avancer
             if (widget.isHost &&
                 newPlayerCount < _lastKnownPlayerCount &&
                 newPlayerCount > 0) {
@@ -8453,7 +9477,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                   } else if (gameType.contains('Relier') &&
                       newGameState['matchState'] == null) {
                     _initializeMatchGameInFirestore();
-                  } else if (gameType.contains('Mot MystÃ¨re') &&
+                  } else if (gameType.contains('Mot Mystère') &&
                       newGameState['motMystereState'] == null) {
                     _initializeMotMystereInFirestore();
                   }
@@ -8471,14 +9495,14 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             }
           },
           onError: (error) {
-            print("Erreur lors de l'Ã©coute de la salle: $error");
+            print("Erreur lors de l'écoute de la salle: $error");
             if (_isMounted && !_isNavigatingToResults)
               _navigateToResultsPage(_players);
           },
         );
   }
 
-  // VÃ©rifie si tous les joueurs restants ont rÃ©pondu (aprÃ¨s dÃ©connexion d'un joueur)
+  // Vérifie si tous les joueurs restants ont répondu (après déconnexion d'un joueur)
   void _checkIfAllRemainingPlayersAnswered() {
     if (!widget.isHost || _isAdvancing) return;
     final playersAnswered =
@@ -8487,10 +9511,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         _games.isNotEmpty && _gameState['currentGameIndex'] != null
             ? (_games[_gameState['currentGameIndex']]['type'] as String? ?? '')
             : '';
-    // Pour les jeux Ã  tour par tour, ne pas forcer l'avancement
+    // Pour les jeux à tour par tour, ne pas forcer l'avancement
     if (gameType.contains('Memory') ||
         gameType.contains('Pendu') ||
-        gameType.contains('Mot MystÃ¨re'))
+        gameType.contains('Mot Mystère') ||
+        gameType.contains('Mot Mystere') ||
+        gameType.contains('Relier'))
       return;
 
     final allRemainingAnswered = _players.keys.every(
@@ -8532,19 +9558,32 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (currentIndex >= _games.length) return;
     final gameType = _games[currentIndex]['type'] as String? ?? '';
 
-    // Les jeux Ã  tour par tour n'ont pas de timer global
+    // Les jeux à tour par tour n'ont pas de timer global
     final bool isTimedGame =
         !gameType.contains('Memory') &&
         !gameType.contains('Pendu') &&
-        !gameType.contains('Mot MystÃ¨re');
+        !gameType.contains('Mot Mystère');
 
     if (isTimedGame) {
-      if (gameType.contains('Quiz Ã‰clair')) {
+      if (_settings!.disableTimer) {
+        _remainingTime.value = 0;
+      } else if (_settings!.useGameSpecificTimers &&
+          _games[currentIndex]['timeLimit'] != null) {
+        final rawLimit = _games[currentIndex]['timeLimit'];
+        _remainingTime.value =
+            (rawLimit is int)
+                ? rawLimit
+                : int.tryParse(rawLimit.toString()) ??
+                    _settings!.questionDuration;
+      } else if (gameType.contains('Quiz Éclair')) {
         _remainingTime.value = 8;
       } else {
         _remainingTime.value = _settings!.questionDuration;
       }
-      _startTimer();
+
+      if (_remainingTime.value > 0) {
+        _startTimer();
+      }
     } else {
       _remainingTime.value = 0;
     }
@@ -8572,17 +9611,19 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             !gameType.contains('Memory') &&
             !gameType.contains('Pendu') &&
             !gameType.contains('Relier') &&
-            !gameType.contains('Mot MystÃ¨re')) {
+            !gameType.contains('Mot Mystère') &&
+            !gameType.contains('Mot Mystere') &&
+            !gameType.contains('Estimation')) {
           _submitAnswer('', isCorrect: false);
         } else if (gameType.contains('Relier') && !_isMatchSubmitted) {
           _submitMatches();
         }
 
-        // L'hÃ´te vÃ©rifie si on peut passer Ã  la suite
+        // L'hôte vérifie si on peut passer à la suite
         if (widget.isHost && !_isAdvancing) {
           final playersAnswered =
               (_gameState['playersAnswered'] as List<dynamic>?) ?? [];
-          // ConsidÃ©rer seulement les joueurs actifs (prÃ©sents dans la room)
+          // Considérer seulement les joueurs actifs (présents dans la room)
           final activePlayers = _players.keys.toList();
           bool allAnswered = activePlayers.every(
             (p) => playersAnswered.contains(p),
@@ -8640,14 +9681,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (_settings?.showAnswerPolicy == 'immediate') {
         _feedback =
             isCorrect
-                ? 'Bonne rÃ©ponse !' + (_gameHintVisible ? ' (+5 pts)' : '')
-                : 'Mauvaise rÃ©ponse...';
+                ? 'Bonne réponse !' + (_gameHintVisible ? ' (+5 pts)' : '')
+                : 'Mauvaise réponse...';
       } else {
-        _feedback = 'RÃ©ponse enregistrÃ©e !';
+        _feedback = 'Réponse enregistrée !';
       }
     });
-
-    if (widget.isGuest) return;
 
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
@@ -8687,10 +9726,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (_isMatchSubmitted) return;
     setState(() {
       _isMatchSubmitted = true;
-      _feedback = 'Associations enregistrÃ©es !';
+      _feedback = 'Associations enregistrées !';
     });
-
-    if (widget.isGuest) return;
 
     final game = _games[_gameState['currentGameIndex']];
     final correctPairs =
@@ -8763,7 +9800,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             'gameState.motMystereState': null,
           });
     }
-    // RÃ©initialiser le verrou d'avancement cÃ´tÃ© hÃ´te
+    // Réinitialiser le verrou d'avancement côté hôte
     if (mounted)
       setState(() {
         _isAdvancing = false;
@@ -8801,7 +9838,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (playersList.isEmpty) return;
 
     final game = _games[_gameState['currentGameIndex']];
-    final word = (game['word'] as String).toUpperCase();
+    final word = (game['word']?.toString() ?? '').toUpperCase();
 
     await FirebaseFirestore.instance
         .collection('onlineRooms')
@@ -8818,8 +9855,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   }
 
   Future<void> _guessLetterOnline(String letter) async {
-    if (widget.isGuest) return;
-
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -8830,7 +9865,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       var data = snapshot.data() as Map<String, dynamic>;
       var players = Map<String, dynamic>.from(data['players']);
       var gameState = Map<String, dynamic>.from(data['gameState']);
-      var hState = Map<String, dynamic>.from(gameState['hangmanState']);
+      var hState = Map<String, dynamic>.from(gameState['hangmanState'] ?? {});
 
       if (hState['gameOver'] == true ||
           hState['currentPlayerName'] != widget.playerName)
@@ -8838,7 +9873,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       var usedLetters = List<String>.from(hState['usedLetters'] ?? []);
       int mistakes = hState['mistakes'] ?? 0;
-      final word = (hState['wordToGuess'] as String).toUpperCase();
+      final word = (hState['wordToGuess']?.toString() ?? '').toUpperCase();
       final currentPlayerName = hState['currentPlayerName'];
 
       if (usedLetters.contains(letter)) return;
@@ -8858,8 +9893,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       if (isWordGuessed) {
         hState['gameOver'] = true;
-        players[currentPlayerName]['score'] =
-            (players[currentPlayerName]['score'] ?? 0) + 20;
+        if (players.containsKey(currentPlayerName) &&
+            players[currentPlayerName] != null) {
+          players[currentPlayerName]['score'] =
+              (players[currentPlayerName]['score'] ?? 0) + 20;
+        }
       } else if (mistakes >= 6) {
         hState['gameOver'] = true;
       }
@@ -8868,7 +9906,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       final currentIndex = playerNames.indexOf(currentPlayerName);
       final nextIndex = (currentIndex + 1) % playerNames.length;
 
-      // Mise Ã  jour propre de l'objet global
+      // Mise à jour propre de l'objet global
       hState['usedLetters'] = usedLetters;
       hState['mistakes'] = mistakes;
       if (hState['gameOver'] != true) {
@@ -8897,15 +9935,18 @@ class _OnlineGamePageState extends State<OnlineGamePage>
           (game['items'] as List<dynamic>?)?.cast<Map<dynamic, dynamic>>() ??
           [];
       for (var item in items) {
+        final img =
+            (item['image_url'] ?? item['image_description'] ?? '').toString();
+        final text = (item['text_label'] ?? item['text'] ?? '').toString();
         initialCards.add({
           'id': idCounter,
-          'value': item['image_url'],
+          'value': img.isNotEmpty ? img : text,
           'matched': false,
           'flipped': false,
         });
         initialCards.add({
           'id': idCounter,
-          'value': item['image_url'],
+          'value': text.isNotEmpty ? text : img,
           'matched': false,
           'flipped': false,
         });
@@ -8918,12 +9959,13 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       for (var pair in pairsData) {
         String value1 =
             displayMode == 'definitionToImage'
-                ? pair['definition']
-                : pair['word'];
+                ? (pair['definition'] ?? '').toString()
+                : (pair['word'] ?? '').toString();
         String value2 =
             displayMode == 'definitionToImage'
-                ? pair['image_url']
-                : pair['definition'];
+                ? (pair['image_url'] ?? pair['image_description'] ?? '')
+                    .toString()
+                : (pair['definition'] ?? '').toString();
         initialCards.add({
           'id': idCounter,
           'value': value1,
@@ -8949,8 +9991,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         .update({
           'gameState.memoryState': {
             'cards': initialCards,
-            'flipped': [], // GardÃ© par sÃ©curitÃ©
-            'playerFlipped': {}, // <-- NOUVEAU: Suivi indÃ©pendant par joueur
+            'flipped': [], // Gardé par sécurité
+            'playerFlipped': {}, // <-- NOUVEAU: Suivi indépendant par joueur
             'currentPlayerName': playersList.first,
             'gameOver': false,
             'status': 'playing',
@@ -8974,7 +10016,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         (!isMyTurn || memoryState['status'] == 'checking'))
       return;
     if (_memoryCards[index]['flipped'] == true) return;
-    if (widget.isGuest) return;
 
     setState(() {
       _isMemoryBusy = true;
@@ -8991,7 +10032,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       var data = snapshot.data() as Map<String, dynamic>;
       var gameState = Map<String, dynamic>.from(data['gameState']);
-      var mState = Map<String, dynamic>.from(gameState['memoryState']);
+      var mState = Map<String, dynamic>.from(gameState['memoryState'] ?? {});
       List<dynamic> currentCards = List<dynamic>.from(mState['cards']);
 
       // Utilisation du tableau propre au joueur
@@ -9002,7 +10043,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         playerFlipped[widget.playerName] ?? [],
       );
 
-      if (myFlipped.length >= 2) return; // SÃ©curitÃ© anti-spam
+      if (myFlipped.length >= 2) return; // Sécurité anti-spam
+      if (currentCards[index]['flipped'] == true ||
+          currentCards[index]['matched'] == true)
+        return;
 
       currentCards[index]['flipped'] = true;
       myFlipped.add(index);
@@ -9024,7 +10068,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     });
 
     if (isSecondCard) {
-      _resolveMemoryTurn(); // RÃ©sout pour le joueur spÃ©cifiquement
+      _resolveMemoryTurn(); // Résout pour le joueur spécifiquement
     }
 
     Future.delayed(const Duration(milliseconds: 300), () {
@@ -9033,7 +10077,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   }
 
   Future<void> _resolveMemoryTurn() async {
-    await Future.delayed(const Duration(milliseconds: 1500));
+    await Future.delayed(const Duration(milliseconds: 600));
     if (!_isMounted) return;
 
     await FirebaseFirestore.instance.runTransaction((transaction) async {
@@ -9046,7 +10090,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       var data = snapshot.data() as Map<String, dynamic>;
       var players = Map<String, dynamic>.from(data['players']);
       var gameState = Map<String, dynamic>.from(data['gameState']);
-      var mState = Map<String, dynamic>.from(gameState['memoryState']);
+      var mState = Map<String, dynamic>.from(gameState['memoryState'] ?? {});
       List<dynamic> currentCards = List<dynamic>.from(mState['cards']);
 
       var playerFlipped = Map<String, dynamic>.from(
@@ -9061,6 +10105,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       int card1Index = myFlipped[0];
       int card2Index = myFlipped[1];
+      if (card1Index < 0 ||
+          card1Index >= currentCards.length ||
+          card2Index < 0 ||
+          card2Index >= currentCards.length)
+        return;
+
       Map<String, dynamic> card1 = Map<String, dynamic>.from(
         currentCards[card1Index],
       );
@@ -9068,16 +10118,27 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         currentCards[card2Index],
       );
 
+      if (card1['matched'] == true || card2['matched'] == true) {
+        playerFlipped[widget.playerName] = [];
+        mState['playerFlipped'] = playerFlipped;
+        gameState['memoryState'] = mState;
+        transaction.update(roomRef, {'gameState': gameState});
+        return;
+      }
+
       if (card1['id'] == card2['id']) {
         currentCards[card1Index]['matched'] = true;
         currentCards[card2Index]['matched'] = true;
-        players[widget.playerName]['score'] =
-            (players[widget.playerName]['score'] ?? 0) + 15;
+        if (players.containsKey(widget.playerName) &&
+            players[widget.playerName] != null) {
+          players[widget.playerName]['score'] =
+              (players[widget.playerName]['score'] ?? 0) + 15;
+        }
       } else {
         currentCards[card1Index]['flipped'] = false;
         currentCards[card2Index]['flipped'] = false;
 
-        // On passe le tour seulement en tour par tour ET si c'est bien Ã  ce joueur de jouer
+        // On passe le tour seulement en tour par tour ET si c'est bien à ce joueur de jouer
         if (_settings?.memoryMode == 'turnBased' &&
             currentPlayerName == widget.playerName) {
           final playerNames = players.keys.toList();
@@ -9093,7 +10154,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         gameState['canGoToNextQuestion'] = true;
       }
 
-      // RÃ©initialise uniquement les cartes de CE joueur
+      // Réinitialise uniquement les cartes de CE joueur
       playerFlipped[widget.playerName] = [];
       mState['playerFlipped'] = playerFlipped;
       mState['cards'] = currentCards;
@@ -9140,7 +10201,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         });
   }
 
-  // NOUVEAU: Initialisation du jeu "Mot MystÃ¨re" en ligne
+  // NOUVEAU: Initialisation du jeu "Mot Mystère" en ligne
   void _initializeMotMystereInFirestore() async {
     if (!widget.isHost) return;
 
@@ -9167,7 +10228,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         });
   }
 
-  // NOUVEAU: Logique pour soumettre une tentative au "Mot MystÃ¨re"
+  // NOUVEAU: Logique pour soumettre une tentative au "Mot Mystère"
   Future<void> _submitMotMystereGuess(String guess) async {
     final motMystereState =
         _gameState['motMystereState'] as Map<String, dynamic>?;
@@ -9175,8 +10236,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         motMystereState['gameOver'] == true ||
         motMystereState['currentPlayerName'] != widget.playerName)
       return;
-
-    if (widget.isGuest) return;
 
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
@@ -9188,13 +10247,16 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       var data = snapshot.data() as Map<String, dynamic>;
       var players = Map<String, dynamic>.from(data['players']);
       var gameState = Map<String, dynamic>.from(data['gameState']);
-      var mmState = Map<String, dynamic>.from(gameState['motMystereState']);
+      var mmState = Map<String, dynamic>.from(
+        gameState['motMystereState'] ?? {},
+      );
       var guesses = Map<String, dynamic>.from(mmState['guesses'] ?? {});
 
-      final wordToGuess = (mmState['wordToGuess'] as String).toUpperCase();
+      final wordToGuess =
+          (mmState['wordToGuess']?.toString() ?? '').toUpperCase();
       final currentPlayerName = mmState['currentPlayerName'];
 
-      // Ajoute la tentative Ã  la liste du joueur
+      // Ajoute la tentative à la liste du joueur
       List<String> playerGuesses = List<String>.from(
         guesses[currentPlayerName] ?? [],
       );
@@ -9203,16 +10265,19 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       bool isWordGuessed = guess.toUpperCase() == wordToGuess;
       int totalGuesses = 0;
-      guesses.values.forEach((g) => totalGuesses += (g as List).length);
+      guesses.values.forEach((g) => totalGuesses += (g is List ? g.length : 0));
 
-      // Utilise la limite sauvegardÃ©e (ou calcule en fallback)
+      // Utilise la limite sauvegardée (ou calcule en fallback)
       int maxGuesses =
           mmState['maxGuesses'] ?? ((wordToGuess.length + 1) * players.length);
 
       if (isWordGuessed) {
         mmState['gameOver'] = true;
-        players[currentPlayerName]['score'] =
-            (players[currentPlayerName]['score'] ?? 0) + 25;
+        if (players.containsKey(currentPlayerName) &&
+            players[currentPlayerName] != null) {
+          players[currentPlayerName]['score'] =
+              (players[currentPlayerName]['score'] ?? 0) + 25;
+        }
       } else if (totalGuesses >= maxGuesses) {
         mmState['gameOver'] = true;
       }
@@ -9253,9 +10318,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, result) async {
         if (didPop) return;
-        // EmpÃªcher le retour arriÃ¨re pendant le jeu (pour Ã©viter les dÃ©synchronisations)
+        // Empêcher le retour arrière pendant le jeu (pour éviter les désynchronisations)
         final shouldLeave = await showDialog<bool>(
           context: context,
           builder:
@@ -9310,50 +10375,48 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     );
   }
 
-  // GÃ¨re le dÃ©part propre d'un joueur en cours de partie
+  // Gère le départ propre d'un joueur en cours de partie
   Future<void> _handlePlayerLeave() async {
     _roomSubscription.cancel();
     _timer?.cancel();
+
+    // 1. D'ABORD sanctionner l'abandon auprès de la Cloud Function
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'abandonOnlineGame',
+      );
+      await callable.call({'roomId': widget.roomId, 'averageDifficulty': 5.0});
+    } catch (e) {
+      print("Erreur lors de la sanction d'abandon: $e");
+    }
+
+    // 2. PUIS quitter la room dans Firestore
     try {
       if (widget.isHost) {
-        // L'hÃ´te qui quitte termine la partie pour tout le monde
         await FirebaseFirestore.instance
             .collection('onlineRooms')
             .doc(widget.roomId)
             .update({'active': false});
       } else {
-        // Un joueur normal qui quitte est retirÃ© de la liste
         await FirebaseFirestore.instance
             .collection('onlineRooms')
             .doc(widget.roomId)
-            .update({'players.${widget.playerName}': FieldValue.delete()});
-        // Notifier l'hÃ´te que le nb de joueurs a changÃ©
+            .update({
+              FieldPath(['players', widget.playerName]): FieldValue.delete(),
+            });
         await _checkIfAllRemainingPlayersAnsweredAfterLeave();
       }
-
-      // Appel de la Cloud Function pour sanctionner l'abandon
-      try {
-        final callable = FirebaseFunctions.instance.httpsCallable(
-          'abandonOnlineGame',
-        );
-        await callable.call({
-          'roomId': widget.roomId,
-          'averageDifficulty': 5.0,
-        });
-      } catch (e) {
-        print("Erreur lors de la sanction d'abandon: $e");
-      }
     } catch (e) {
-      print("Erreur lors du dÃ©part du joueur: $e");
+      print("Erreur lors du départ du joueur: $e");
     }
     if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
   }
 
   Future<void> _checkIfAllRemainingPlayersAnsweredAfterLeave() async {
-    // La vÃ©rification se fait via le listener Firestore cÃ´tÃ© hÃ´te
+    // La vérification se fait via le listener Firestore côté hôte
   }
 
-  // GÃ¨re le cas oÃ¹ le joueur actif dans un jeu tour-par-tour quitte la partie
+  // Gère le cas où le joueur actif dans un jeu tour-par-tour quitte la partie
   void _handleDisconnectInTurnBasedGame(
     Map<String, dynamic> currentPlayers,
     Map<String, dynamic> currentGameState,
@@ -9368,7 +10431,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (hState == null || hState['gameOver'] == true) return;
       final currentPlayer = hState['currentPlayerName'] as String?;
       if (currentPlayer != null && !currentPlayers.containsKey(currentPlayer)) {
-        // Le joueur courant a quittÃ© â€” passer au suivant
+        // Le joueur courant a quitté — passer au suivant
         final remaining = currentPlayers.keys.toList();
         if (remaining.isEmpty) return;
         final nextPlayer = remaining.first;
@@ -9377,7 +10440,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             .doc(widget.roomId)
             .update({'gameState.hangmanState.currentPlayerName': nextPlayer});
       }
-    } else if (gameType.contains('Mot MystÃ¨re')) {
+    } else if (gameType.contains('Mot Mystère')) {
       final mmState =
           currentGameState['motMystereState'] as Map<String, dynamic>?;
       if (mmState == null || mmState['gameOver'] == true) return;
@@ -9396,6 +10459,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     } else if (gameType.contains('Memory')) {
       final mState = currentGameState['memoryState'] as Map<String, dynamic>?;
       if (mState == null || mState['gameOver'] == true) return;
+      if (_settings?.memoryMode == 'race') return;
       final currentPlayer = mState['currentPlayerName'] as String?;
       if (currentPlayer != null && !currentPlayers.containsKey(currentPlayer)) {
         final remaining = currentPlayers.keys.toList();
@@ -9410,7 +10474,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   }
 
   Widget _buildHintButton(Map<String, dynamic> game) {
-    // Si aucun indice n'a Ã©tÃ© dÃ©fini Ã  la crÃ©ation, on n'affiche aucun bouton
+    // Si aucun indice n'a été défini à la création, on n'affiche aucun bouton
     final hint = game['hint']?.toString();
     if (hint == null || hint.trim().isEmpty) {
       return const SizedBox.shrink();
@@ -9447,14 +10511,14 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         onPressed: () {
           setState(() {
             _gameHintVisible = true;
-            if (game['type']?.toString().contains('Quiz Ã‰clair') == true) {
+            if (game['type']?.toString().contains('Quiz Éclair') == true) {
               _remainingTime.value = max(0, _remainingTime.value - 2);
             }
           });
         },
         icon: const Icon(Icons.lightbulb_outline_rounded, size: 16),
         label: Text(
-          game['type']?.toString().contains('Quiz Ã‰clair') == true
+          game['type']?.toString().contains('Quiz Éclair') == true
               ? 'Voir l\'indice (-2s)'
               : 'Voir l\'indice',
         ),
@@ -9486,8 +10550,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             padding: const EdgeInsets.all(12.0),
             child: Column(
               children: [
+                // Indique le type/format de la question courante
                 Text(
-                  gameType,
+                  'Format : $gameType',
                   style: Theme.of(context).textTheme.headlineSmall,
                   textAlign: TextAlign.center,
                 ),
@@ -9498,7 +10563,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                         ![
                           'Memory',
                           'Pendu',
-                          'Mot MystÃ¨re',
+                          'Mot Mystère',
                         ].any(gameType.contains)) {
                       return Padding(
                         padding: const EdgeInsets.only(top: 8.0),
@@ -9521,7 +10586,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         if (game['theme'] != null) ...[
           const SizedBox(height: 8),
           Text(
-            'ThÃ¨me : ${game['theme']}',
+            'Thème : ${game['theme']}',
             style: const TextStyle(fontStyle: FontStyle.italic),
           ),
         ],
@@ -9558,24 +10623,24 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         correctAnswerText = game['correct'];
       else if (gameType.contains('Choisir l\'Intrus'))
         correctAnswerText = game['intruder'];
-      else if (gameType.contains('ComplÃ©ter la Phrase') ||
+      else if (gameType.contains('Compléter la Phrase') ||
           gameType.contains('Quiz par Indices'))
         correctAnswerText = game['correct'] ?? game['answer'] ?? '';
-      else if (gameType.contains('Deux VÃ©ritÃ©s'))
+      else if (gameType.contains('Deux Vérités'))
         correctAnswerText = game['lie'];
       else if (gameType == 'Qui suis-je ?')
         correctAnswerText = game['answer'];
       else if (gameType == 'Le Mot Anagramme')
         correctAnswerText = game['solution'];
       else if (gameType.contains('Chronologie') ||
-          gameType.contains('Quiz Ã‰clair'))
+          gameType.contains('Quiz Éclair'))
         correctAnswerText =
             game['correct'] ??
             (game['events'] as List<dynamic>?)?.join(' -> ') ??
             '';
       else if (gameType.contains('Pendu'))
         correctAnswerText = game['word'];
-      else if (gameType.contains('Mot MystÃ¨re'))
+      else if (gameType.contains('Mot Mystère'))
         correctAnswerText = game['word'];
       else if (gameType.contains('Estimation')) {
         final ans = (game['answer'] as num?)?.toDouble() ?? 0;
@@ -9597,7 +10662,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         }
       }
     } catch (e) {
-      print("Erreur de rÃ©cupÃ©ration de la bonne rÃ©ponse: $e");
+      print("Erreur de récupération de la bonne réponse: $e");
     }
 
     return Column(
@@ -9612,7 +10677,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         const SizedBox(height: 24),
         if (!gameType.contains('Memory')) ...[
           const Text(
-            'La bonne rÃ©ponse Ã©tait :',
+            'La bonne réponse était :',
             style: TextStyle(fontSize: 18),
           ),
           const SizedBox(height: 8),
@@ -9673,7 +10738,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         const SizedBox(height: 8),
         const Text(
           "Question suivante...",
-          style: const TextStyle(color: Colors.grey),
+          style: TextStyle(color: Colors.grey),
         ),
       ],
     );
@@ -9687,12 +10752,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     } else if ([
       'Qui suis-je ?',
       'Le Mot Anagramme',
-      'ComplÃ©ter la Phrase',
+      'Compléter la Phrase',
     ].contains(gameType)) {
       return _buildTextInputGame(game, gameType);
     } else if (gameType.contains('Relier')) {
       return _buildMatchGameBody(game);
-    } else if (gameType.contains('Mot MystÃ¨re')) {
+    } else if (gameType.contains('Mot Mystère')) {
       return _buildMotMystereBody(game);
     } else if (gameType.contains('Estimation')) {
       return _buildEstimationOnlineBody(game);
@@ -9713,32 +10778,31 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     return Column(
       children: [
         Text(
-          game['question'] ?? "Remettez les Ã©vÃ©nements dans l'ordre :",
+          game['question'] ?? "Remettez les événements dans l'ordre :",
           style: const TextStyle(fontSize: 18),
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 16),
-        SizedBox(
-          height: (_chronologyEvents!.length * 70.0).clamp(0.0, 400.0),
-          child: ReorderableListView.builder(
-            itemCount: _chronologyEvents!.length,
-            itemBuilder:
-                (context, index) => Card(
-                  key: ValueKey('${_chronologyEvents![index]}_$index'),
-                  child: ListTile(
-                    leading: const Icon(Icons.drag_handle),
-                    title: Text(_chronologyEvents![index]),
-                  ),
+        ReorderableListView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          itemCount: _chronologyEvents!.length,
+          itemBuilder:
+              (context, index) => Card(
+                key: ValueKey('${_chronologyEvents![index]}_$index'),
+                child: ListTile(
+                  leading: const Icon(Icons.drag_handle),
+                  title: Text(_chronologyEvents![index]),
                 ),
-            onReorder: (oldIndex, newIndex) {
-              if (_localAnswerSubmitted) return;
-              setState(() {
-                if (newIndex > oldIndex) newIndex -= 1;
-                final item = _chronologyEvents!.removeAt(oldIndex);
-                _chronologyEvents!.insert(newIndex, item);
-              });
-            },
-          ),
+              ),
+          onReorder: (oldIndex, newIndex) {
+            if (_localAnswerSubmitted) return;
+            setState(() {
+              if (newIndex > oldIndex) newIndex -= 1;
+              final item = _chronologyEvents!.removeAt(oldIndex);
+              _chronologyEvents!.insert(newIndex, item);
+            });
+          },
         ),
         const SizedBox(height: 16),
         if (!_localAnswerSubmitted)
@@ -9770,33 +10834,43 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     String correctAnswer = '';
 
     if (gameType == 'Qui suis-je ?') {
-      questionText = game['riddle']?.toString() ?? 'Devinette non trouvÃ©e.';
+      questionText = game['riddle']?.toString() ?? 'Devinette non trouvée.';
       correctAnswer = game['answer']?.toString() ?? '';
     } else if (gameType == 'Le Mot Anagramme') {
       String solution = game['solution']?.toString() ?? '';
-      String anagram = game['anagram']?.toString() ?? '';
+      String defaultAnagram = game['anagram']?.toString() ?? '';
 
-      if (anagram.isEmpty || anagram.toUpperCase() == solution.toUpperCase()) {
-        List<String> letters = solution.toUpperCase().split('');
-        if (letters.toSet().length > 1) {
-          letters.shuffle();
-          while (letters.join() == solution.toUpperCase()) {
+      if (_gameState['currentGameIndex'] != _currentAnagramIndex) {
+        _currentAnagramIndex = _gameState['currentGameIndex'] ?? 0;
+
+        if (defaultAnagram.isEmpty ||
+            defaultAnagram.toUpperCase() == solution.toUpperCase()) {
+          List<String> letters = solution.toUpperCase().split('');
+          if (letters.toSet().length > 1) {
             letters.shuffle();
+            while (letters.join() == solution.toUpperCase()) {
+              letters.shuffle();
+            }
+            _currentAnagram = letters.join();
+          } else {
+            _currentAnagram = defaultAnagram;
           }
-          anagram = letters.join();
+        } else {
+          _currentAnagram = defaultAnagram;
         }
       }
 
-      questionText = 'Quel est le mot cachÃ© dans : $anagram';
+      questionText =
+          'Quel est le mot caché dans : ${_currentAnagram ?? defaultAnagram}';
       hintText = game['hint']?.toString();
       correctAnswer = solution;
-    } else if (gameType == 'ComplÃ©ter la Phrase') {
-      questionText = game['question']?.toString() ?? 'Phrase non trouvÃ©e';
+    } else if (gameType == 'Compléter la Phrase') {
+      questionText = game['question']?.toString() ?? 'Phrase non trouvée';
       correctAnswer = game['correct']?.toString() ?? '';
     } else if (gameType == 'Quiz par Indices') {
       final clues =
-          (game['clues'] as List?)?.join('\n') ?? 'Indices non trouvÃ©s.';
-      questionText = "Trouvez la rÃ©ponse avec ces indices :\n$clues";
+          (game['clues'] as List?)?.join('\n') ?? 'Indices non trouvés.';
+      questionText = "Trouvez la réponse avec ces indices :\n$clues";
       correctAnswer = game['answer']?.toString() ?? '';
     }
 
@@ -9818,7 +10892,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         TextField(
           controller: _answerController,
           decoration: const InputDecoration(
-            labelText: 'Votre rÃ©ponse',
+            labelText: 'Votre réponse',
             border: OutlineInputBorder(),
           ),
           enabled: !_localAnswerSubmitted,
@@ -9851,7 +10925,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     } else if (game['question'] is String) {
       questionData['text'] = game['question'];
     } else {
-      questionData['text'] = 'Question non trouvÃ©e.';
+      questionData['text'] = 'Question non trouvée.';
     }
 
     if (gameType.contains('Vrai ou Faux')) {
@@ -9872,9 +10946,17 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     } else if (gameType.contains('Choisir l\'Intrus')) {
       options = List<dynamic>.from(game['options'] ?? []);
       correctAnswer = game['intruder']?.toString() ?? '';
-    } else if (gameType.contains('Deux VÃ©ritÃ©s')) {
+    } else if (gameType.contains('Deux Vérités') ||
+        gameType.contains('Deux Vérités')) {
       options = List<dynamic>.from(game['statements'] ?? []);
       correctAnswer = game['lie']?.toString() ?? '';
+    } else if (gameType.contains('Quiz Éclair') ||
+        gameType.contains('Quiz Eclair')) {
+      options = List<dynamic>.from(
+        game['choices'] ?? game['options'] ?? ['Vrai', 'Faux', 'Peut-Être'],
+      );
+      correctAnswer =
+          game['correct']?.toString() ?? game['answer']?.toString() ?? '';
     }
 
     Widget questionWidget = Column(
@@ -9985,9 +11067,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (hangmanState == null)
       return const Center(child: CircularProgressIndicator());
 
-    final word = (hangmanState['wordToGuess'] as String).toUpperCase();
+    final word = (hangmanState['wordToGuess']?.toString() ?? '').toUpperCase();
     final usedLetters = List<String>.from(hangmanState['usedLetters'] ?? []);
-    final currentPlayerName = hangmanState['currentPlayerName'] as String;
+    final currentPlayerName =
+        hangmanState['currentPlayerName']?.toString() ?? '';
     final isMyTurn = currentPlayerName == widget.playerName;
     final isGameOver = hangmanState['gameOver'] == true;
     final mistakes = hangmanState['mistakes'] as int? ?? 0;
@@ -10001,10 +11084,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     Color statusColor;
     if (isGameOver) {
       if (!displayWord.contains('_')) {
-        statusText = 'GagnÃ© ! Le mot Ã©tait $word.';
+        statusText = 'Gagné ! Le mot était $word.';
         statusColor = Colors.green;
       } else {
-        statusText = 'Perdu ! Le mot Ã©tait $word.';
+        statusText = 'Perdu ! Le mot était $word.';
         statusColor = Colors.red;
       }
     } else if (isMyTurn) {
@@ -10078,10 +11161,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     Color statusColor;
 
     if (isGameOver) {
-      statusText = 'Le jeu de Memory est terminÃ© !';
+      statusText = 'Le jeu de Memory est terminé !';
       statusColor = Colors.green;
     } else if (gameStatus == 'checking') {
-      statusText = 'VÃ©rification...';
+      statusText = 'Vérification...';
       statusColor = Colors.orange;
     } else if (_settings?.memoryMode == 'turnBased') {
       statusText =
@@ -10182,8 +11265,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       children: [
         Text(
           displayMode == 'imageToDefinition'
-              ? 'Associez chaque image Ã  sa dÃ©finition :'
-              : 'Associez chaque dÃ©finition Ã  son mot :',
+              ? 'Associez chaque image à sa définition :'
+              : 'Associez chaque définition à son mot :',
           style: const TextStyle(fontSize: 18),
           textAlign: TextAlign.center,
         ),
@@ -10245,7 +11328,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     );
   }
 
-  // NOUVEAU: Widget pour le jeu "Mot MystÃ¨re" en ligne
+  // NOUVEAU: Widget pour le jeu "Mot Mystère" en ligne
   Widget _buildMotMystereBody(Map<String, dynamic> game) {
     final motMystereState =
         _gameState['motMystereState'] as Map<String, dynamic>?;
@@ -10257,14 +11340,16 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     final currentPlayerName = motMystereState['currentPlayerName'] as String?;
     final isMyTurn = currentPlayerName == widget.playerName;
     final isGameOver = motMystereState['gameOver'] == true;
-    final guesses = Map<String, List<dynamic>>.from(
-      motMystereState['guesses'] ?? {},
+    final rawGuesses =
+        (motMystereState['guesses'] as Map<String, dynamic>?) ?? {};
+    final guesses = rawGuesses.map(
+      (key, value) => MapEntry(key, List<dynamic>.from(value ?? [])),
     );
 
     String statusText;
     Color statusColor;
     if (isGameOver) {
-      statusText = 'Partie terminÃ©e ! Le mot Ã©tait $word.';
+      statusText = 'Partie terminée ! Le mot était $word.';
       statusColor = Colors.green;
     } else if (isMyTurn) {
       statusText =
@@ -10275,13 +11360,13 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       statusColor = Colors.blue;
     }
 
-    // Fonction locale pour gÃ©nÃ©rer le feedback visuel d'une tentative
+    // Fonction locale pour générer le feedback visuel d'une tentative
     List<LetterFeedback> getFeedbackForGuess(String guess, String solution) {
       List<LetterFeedback> feedback = [];
       List<String> solutionLetters = solution.split('');
       List<String> guessLetters = guess.split('');
 
-      // Marquer les lettres bien placÃ©es
+      // Marquer les lettres bien placées
       for (int i = 0; i < guessLetters.length; i++) {
         if (guessLetters[i] == solutionLetters[i]) {
           feedback.add(
@@ -10290,7 +11375,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
               status: LetterStatus.correctPosition,
             ),
           );
-          solutionLetters[i] = ''; // Marquer comme utilisÃ©e
+          solutionLetters[i] = ''; // Marquer comme utilisée
         } else {
           feedback.add(
             LetterFeedback(letter: guessLetters[i], status: LetterStatus.none),
@@ -10298,7 +11383,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         }
       }
 
-      // Marquer les lettres mal placÃ©es
+      // Marquer les lettres mal placées
       for (int i = 0; i < feedback.length; i++) {
         if (feedback[i].status == LetterStatus.none) {
           if (solutionLetters.contains(guessLetters[i])) {
@@ -10307,7 +11392,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
               status: LetterStatus.inWord,
             );
             solutionLetters[solutionLetters.indexOf(guessLetters[i])] =
-                ''; // Marquer comme utilisÃ©e
+                ''; // Marquer comme utilisée
           } else {
             feedback[i] = LetterFeedback(
               letter: guessLetters[i],
@@ -10336,7 +11421,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${entry.key} a tentÃ© :',
+                '${entry.key} a tenté :',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               ...(entry.value).map((g) {
@@ -10440,10 +11525,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     setState(() {
       _localAnswerSubmitted = true;
       _feedback =
-          'Estimation : ${userValue.toStringAsFixed(0)} â€” Score : $points/10 pts';
+          'Estimation : ${userValue.toStringAsFixed(0)} — Score : $points/10 pts';
     });
 
-    if (widget.isGuest) return;
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -10514,7 +11598,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                 if (unit != null && unit.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Chip(
-                    label: Text('UnitÃ© : $unit'),
+                    label: Text('Unité : $unit'),
                     backgroundColor: const Color(0xFF6C3FC7).withOpacity(0.1),
                   ),
                 ],
@@ -10590,7 +11674,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
 class GamePage extends StatefulWidget {
   final List<dynamic> games;
-  final Function(int) onScoreUpdate;
+  final Function(double) onScoreUpdate;
   final bool isGuest;
 
   final DisplayMode qcmQuestionMode;
@@ -10621,26 +11705,27 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   List<String> _usedLetters = [], _shuffledEvents = [], _originalEvents = [];
   List<int> _flippedCardIndexes = [];
 
-  // Ã‰tat pour le jeu Mot MystÃ¨re
+  // État pour le jeu Mot Mystère
   int _motMystereAttempts = 0;
   List<List<LetterFeedback>> _motMystereGuesses = [];
 
-  // Ã‰tat pour le jeu Quiz Ã‰clair
-  final ValueNotifier<int> _quizEclairTimeLeft = ValueNotifier<int>(8);
-  Timer? _quizEclairTimer;
+  // État pour le timer global du jeu (solo)
+  final ValueNotifier<int> _gameTimeLeft = ValueNotifier<int>(0);
+  int _gameTimeTotal = 0;
+  Timer? _gameTimer;
   String? _quizEclairSelectedAnswer;
   bool _quizEclairShowHint = false;
 
-  // Ã‰tat pour le jeu Estimation
+  // État pour le jeu Estimation
   int _estimationPoints = 0;
 
-  // Ã‰tat pour le jeu Quiz par Indices
+  // État pour le jeu Quiz par Indices
   int _quizParIndicesRevealed = 1;
 
-  // Ã‰tat pour les indices par jeu
+  // État pour les indices par jeu
   bool _gameHintVisible = false;
 
-  // Ã‰tat pour l'anagramme (lettres mÃ©langÃ©es garanties)
+  // État pour l'anagramme (lettres mélangées garanties)
   String _currentAnagram = '';
   late final PageController _pageController;
 
@@ -10660,7 +11745,8 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     _answerController.dispose();
     _animationController.dispose();
     _pageController.dispose();
-    _quizEclairTimer?.cancel();
+    _gameTimer?.cancel();
+    _gameTimeLeft.dispose();
     super.dispose();
   }
 
@@ -10680,10 +11766,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       _flippedCardIndexes.clear();
       _motMystereAttempts = 0;
       _motMystereGuesses.clear();
-      _quizEclairTimeLeft.value = 8;
+      _gameTimeLeft.value = 0;
+      _gameTimeTotal = 0;
       _quizEclairSelectedAnswer = null;
       _quizEclairShowHint = false;
-      _quizEclairTimer?.cancel();
+      _gameTimer?.cancel();
       _estimationPoints = 0;
       _quizParIndicesRevealed = 1;
       _gameHintVisible = false;
@@ -10710,8 +11797,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                   ?.cast<Map<dynamic, dynamic>>() ??
               [];
           for (var item in items) {
-            final imageUrl = item['image_url']?.toString() ?? '';
-            final textLabel = item['text_label']?.toString() ?? '';
+            final imageUrl =
+                (item['image_url'] ?? item['image_description'] ?? '')
+                    .toString();
+            final textLabel =
+                (item['text_label'] ?? item['text'] ?? '').toString();
             _memoryCards.add({
               'id': idCounter,
               'value': imageUrl.isNotEmpty ? imageUrl : textLabel,
@@ -10741,12 +11831,13 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           for (var pair in pairsData) {
             String value1 =
                 displayMode == 'definitionToImage'
-                    ? pair['definition']
-                    : pair['word'];
+                    ? (pair['definition'] ?? '').toString()
+                    : (pair['word'] ?? '').toString();
             String value2 =
                 displayMode == 'definitionToImage'
-                    ? (pair['image_url'] ?? '')
-                    : pair['definition'];
+                    ? (pair['image_url'] ?? pair['image_description'] ?? '')
+                        .toString()
+                    : (pair['definition'] ?? '').toString();
             _memoryCards.add({
               'id': idCounter,
               'value': value1,
@@ -10769,11 +11860,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       } else if (gameType.contains('Chronologie')) {
         _originalEvents = List<String>.from(game['events']);
         _shuffledEvents = List<String>.from(_originalEvents)..shuffle();
-      } else if (gameType.contains('Mot MystÃ¨re')) {
+      } else if (gameType.contains('Mot Mystère')) {
         final word = (game['word'] as String? ?? 'ER_REUR').toUpperCase();
         _motMystereAttempts = word.length + 1;
       } else if (gameType == 'Le Mot Anagramme') {
-        // Toujours mÃ©langer les lettres de la solution pour garantir un vrai anagramme
+        // Toujours mélanger les lettres de la solution pour garantir un vrai anagramme
         final solution = (game['solution'] as String? ?? '').toUpperCase();
         List<String> letters = solution.split('');
         bool canBeShuffled = letters.toSet().length > 1;
@@ -10784,16 +11875,37 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           }
         }
         _currentAnagram = letters.join();
-      } else if (gameType.contains('Quiz Ã‰clair')) {
-        // Le timer dÃ©marre aprÃ¨s le premier rendu
-        _quizEclairTimeLeft.value = 8;
+      } else if (gameType.contains('Quiz Éclair')) {
         _quizEclairSelectedAnswer = null;
         _quizEclairShowHint = false;
-        final answer =
-            game['answer']?.toString() ?? game['correct']?.toString() ?? '';
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && !_answered) _startQuizEclairTimer(answer);
-        });
+      }
+
+      final isTurnBased = [
+        'Memory',
+        'Pendu',
+        'Mot Mystère',
+      ].any(gameType.contains);
+      if (!isTurnBased) {
+        int timeLimit = 0;
+        if (gameType.contains('Quiz Éclair')) {
+          timeLimit = 8;
+        } else if (game['timeLimit'] != null) {
+          timeLimit = int.tryParse(game['timeLimit'].toString()) ?? 0;
+        }
+
+        if (timeLimit > 0) {
+          _gameTimeTotal = timeLimit;
+          _gameTimeLeft.value = timeLimit;
+          final answer =
+              game['answer']?.toString() ??
+              game['correct']?.toString() ??
+              game['intruder']?.toString() ??
+              game['lie']?.toString() ??
+              '';
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && !_answered) _startGameTimer(answer);
+          });
+        }
       }
     } catch (e) {
       setState(() {
@@ -10801,7 +11913,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         _answered = true;
       });
       print("Erreur d'initialisation du jeu '$gameType': $e");
-      print("DonnÃ©es du jeu problÃ©matique : $game");
+      print("Données du jeu problématique : $game");
     }
   }
 
@@ -10831,13 +11943,13 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     } else if (gameType.contains('Choisir l\'Intrus')) {
       isCorrect = userAnswer != null && userAnswer == game['intruder'];
       correctAnswerText = game['intruder'];
-    } else if (gameType.contains('ComplÃ©ter la Phrase')) {
+    } else if (gameType.contains('Compléter la Phrase')) {
       isCorrect =
           userAnswer != null &&
           userAnswer.trim().toLowerCase() ==
               (game['correct'] as String).toLowerCase();
       correctAnswerText = game['correct'];
-    } else if (gameType.contains('Deux VÃ©ritÃ©s')) {
+    } else if (gameType.contains('Deux Vérités')) {
       isCorrect = userAnswer != null && userAnswer == game['lie'];
       correctAnswerText = game['lie'];
     } else if (gameType == 'Qui suis-je ?') {
@@ -10867,11 +11979,10 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         _answered = true;
         if (isCorrect) {
           _feedback =
-              'Correct ! +$earned point${earned > 1 ? "s" : ""} (${_quizParIndicesRevealed}/${totalClues} indices utilisÃ©s)';
+              'Correct ! +$earned point${earned > 1 ? "s" : ""} (${_quizParIndicesRevealed}/${totalClues} indices utilisés)';
           _currentScore += earned;
         } else {
-          _feedback =
-              'Incorrect. La bonne rÃ©ponse Ã©tait : $correctAnswerText';
+          _feedback = 'Incorrect. La bonne réponse était : $correctAnswerText';
         }
       });
       return;
@@ -10880,16 +11991,17 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   }
 
   void _finalizeAnswer(bool isCorrect, String correctAnswerText) {
+    _gameTimer?.cancel();
     setState(() {
       _answered = true;
       if (isCorrect) {
         double points = _gameHintVisible ? 0.5 : 1.0;
         _feedback =
             'Correct !' +
-            (_gameHintVisible ? ' (+0.5 pt suite Ã  l\'indice)' : '');
+            (_gameHintVisible ? ' (+0.5 pt suite à l\'indice)' : '');
         _currentScore += points;
       } else {
-        _feedback = 'Incorrect. La bonne rÃ©ponse Ã©tait : $correctAnswerText';
+        _feedback = 'Incorrect. La bonne réponse était : $correctAnswerText';
       }
     });
   }
@@ -10914,7 +12026,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   }
 
   Widget _buildHintButton(Map<String, dynamic> game) {
-    // Si aucun indice n'a Ã©tÃ© dÃ©fini Ã  la crÃ©ation, on n'affiche aucun bouton
+    // Si aucun indice n'a été défini à la création, on n'affiche aucun bouton
     final hint = game['hint']?.toString();
     if (hint == null || hint.trim().isEmpty) {
       return const SizedBox.shrink();
@@ -10983,7 +12095,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       } else {
         final selected = _matches[key];
         corrections.add(
-          'â€¢ $displayKey â†’ $correctValue'
+          '• $displayKey → $correctValue'
           '${selected != null ? ' (vous avez choisi : $selected)' : ''}',
         );
       }
@@ -11016,7 +12128,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         .entries
         .map((e) => '${e.key + 1}. ${e.value}')
         .join('\n');
-    _finalizeAnswer(allCorrect, 'Le bon ordre Ã©tait :\n$numberedOrder');
+    _finalizeAnswer(allCorrect, 'Le bon ordre était :\n$numberedOrder');
   }
 
   void _flipCard(int index) {
@@ -11063,7 +12175,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   void _guessLetter(String letter) {
     if (_answered || _usedLetters.contains(letter)) return;
     final game = widget.games[_currentGameIndex];
-    final word = (game['word'] as String).toUpperCase();
+    final word = (game['word']?.toString() ?? '').toUpperCase();
     setState(() {
       _usedLetters.add(letter);
       if (word.contains(letter)) {
@@ -11075,10 +12187,10 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                   : _penduCurrent[i];
         _penduCurrent = newCurrent;
         if (!_penduCurrent.contains('_'))
-          _finalizeAnswer(true, 'Le mot Ã©tait $word.');
+          _finalizeAnswer(true, 'Le mot était $word.');
       } else {
         _penduAttempts--;
-        if (_penduAttempts <= 0) _finalizeAnswer(false, 'Le mot Ã©tait $word.');
+        if (_penduAttempts <= 0) _finalizeAnswer(false, 'Le mot était $word.');
       }
     });
   }
@@ -11103,7 +12215,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       List<LetterFeedback> feedback = [];
       List<String> solutionLetters = solution.split('');
 
-      // Marquer les lettres bien placÃ©es (vert)
+      // Marquer les lettres bien placées (vert)
       for (int i = 0; i < guess.length; i++) {
         if (guess[i] == solutionLetters[i]) {
           feedback.add(
@@ -11113,7 +12225,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             ),
           );
           solutionLetters[i] =
-              ''; // Marquer comme utilisÃ©e pour ne pas la compter en jaune
+              ''; // Marquer comme utilisée pour ne pas la compter en jaune
         } else {
           feedback.add(
             LetterFeedback(letter: guess[i], status: LetterStatus.none),
@@ -11121,7 +12233,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         }
       }
 
-      // Marquer les lettres mal placÃ©es (jaune) et absentes (gris)
+      // Marquer les lettres mal placées (jaune) et absentes (gris)
       for (int i = 0; i < feedback.length; i++) {
         if (feedback[i].status == LetterStatus.none) {
           if (solutionLetters.contains(guess[i])) {
@@ -11145,20 +12257,24 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       if (guess == solution) {
         _finalizeAnswer(true, '');
       } else if (_motMystereAttempts <= 0) {
-        _finalizeAnswer(false, 'Le mot Ã©tait $solution.');
+        _finalizeAnswer(false, 'Le mot était $solution.');
       }
     });
   }
 
   void _nextGame() {
-    _quizEclairTimer?.cancel();
+    _gameTimer?.cancel();
     if (_currentGameIndex < widget.games.length - 1) {
+      setState(() {
+        _currentGameIndex++;
+        _initializeGame();
+      });
       _pageController.nextPage(
         duration: const Duration(milliseconds: 420),
         curve: Curves.easeOutCubic,
       );
     } else {
-      widget.onScoreUpdate(_currentScore.round());
+      widget.onScoreUpdate(_currentScore);
       Navigator.pop(context);
     }
   }
@@ -11184,15 +12300,15 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     );
   }
 
-  void _startQuizEclairTimer(String correctAnswer) {
-    _quizEclairTimer?.cancel();
-    _quizEclairTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+  void _startGameTimer(String correctAnswer) {
+    _gameTimer?.cancel();
+    _gameTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      if (_quizEclairTimeLeft.value > 0) {
-        _quizEclairTimeLeft.value--;
+      if (_gameTimeLeft.value > 0) {
+        _gameTimeLeft.value--;
       } else {
         timer.cancel();
         if (!_answered) _finalizeAnswer(false, correctAnswer);
@@ -11202,7 +12318,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
   void _checkQuizEclair(String userAnswer, String correctAnswer) {
     if (_answered) return;
-    _quizEclairTimer?.cancel();
+    _gameTimer?.cancel();
     setState(() {
       _quizEclairSelectedAnswer = userAnswer;
     });
@@ -11229,13 +12345,13 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     String emoji;
     if (percentError == 0) {
       points = 10;
-      emoji = 'ðŸŽ¯ Parfait ! RÃ©ponse exacte !';
+      emoji = '🎯 Parfait ! Réponse exacte !';
     } else if (percentError <= 0.01) {
       points = 9;
       emoji = 'ðŸ”¥ Excellent ! Erreur < 1%.';
     } else if (percentError <= 0.05) {
       points = 7;
-      emoji = 'â­ TrÃ¨s bien ! Erreur < 5%.';
+      emoji = 'â­ Très bien ! Erreur < 5%.';
     } else if (percentError <= 0.15) {
       points = 5;
       emoji = 'ðŸ‘ Bien ! Erreur < 15%.';
@@ -11244,7 +12360,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       emoji = 'ðŸ™‚ Pas loin ! Erreur < 30%.';
     } else {
       points = 0;
-      emoji = 'âŒ Trop Ã©loignÃ©.';
+      emoji = 'âŒ Trop éloigné.';
     }
     final unitStr = unit != null && unit.isNotEmpty ? ' $unit' : '';
     final correctStr = correctAnswer.toStringAsFixed(
@@ -11253,9 +12369,9 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     setState(() {
       _estimationPoints = points;
       _answered = true;
-      _currentScore += (points ~/ 4); // 0 Ã  2 points sur le score global solo
+      _currentScore += (points ~/ 4); // 0 à 2 points sur le score global solo
       _feedback =
-          'La rÃ©ponse Ã©tait $correctStr$unitStr\n$emoji ($points/10 pts)';
+          'La réponse était $correctStr$unitStr\n$emoji ($points/10 pts)';
     });
   }
 
@@ -11278,89 +12394,24 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             padding: const EdgeInsets.all(16),
             child: Column(
               children: [
-                ValueListenableBuilder<int>(
-                  valueListenable: _quizEclairTimeLeft,
-                  builder: (context, timeLeft, child) {
-                    final timeRatio = timeLeft / 8.0;
-                    final Color timerColor =
-                        timeRatio > 0.5
-                            ? AppColors.successGreen
-                            : timeRatio > 0.25
-                            ? AppColors.warningOrange
-                            : AppColors.errorRed;
-                    return Column(
-                      children: [
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Row(
-                              children: [
-                                Icon(
-                                  Icons.bolt_rounded,
-                                  color: AppColors.quizOrange,
-                                  size: 20,
-                                ),
-                                SizedBox(width: 6),
-                                Text(
-                                  'Quiz Ã‰clair !',
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight: FontWeight.bold,
-                                    color: AppColors.quizOrange,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            if (!_answered)
-                              AnimatedContainer(
-                                duration: const Duration(milliseconds: 400),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 12,
-                                  vertical: 6,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: timerColor.withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(20),
-                                  border: Border.all(color: timerColor),
-                                ),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.timer_rounded,
-                                      size: 16,
-                                      color: timerColor,
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Text(
-                                      '$timeLeft s',
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: timerColor,
-                                        fontSize: 15,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                          ],
-                        ),
-                        const SizedBox(height: 8),
-                        if (!_answered)
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(4),
-                            child: LinearProgressIndicator(
-                              value: timeLeft / 8.0,
-                              backgroundColor: Colors.grey.shade200,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                timerColor,
-                              ),
-                              minHeight: 8,
-                            ),
-                          ),
-                      ],
-                    );
-                  },
+                const Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.bolt_rounded,
+                      color: AppColors.quizOrange,
+                      size: 20,
+                    ),
+                    SizedBox(width: 6),
+                    Text(
+                      'Quiz Éclair !',
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.quizOrange,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 14),
                 Text(
@@ -11471,16 +12522,80 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             onPressed:
                 () => setState(() {
                   _quizEclairShowHint = true;
-                  _quizEclairTimeLeft.value = max(
-                    0,
-                    _quizEclairTimeLeft.value - 2,
-                  );
+                  _gameTimeLeft.value = max(0, _gameTimeLeft.value - 2);
                 }),
             icon: const Icon(Icons.lightbulb_outline_rounded, size: 16),
             label: const Text('Voir un indice (-2s)'),
             style: TextButton.styleFrom(foregroundColor: Colors.amber),
           ),
       ],
+    );
+  }
+
+  Widget _buildGameTimer() {
+    if (_gameTimeTotal <= 0) return const SizedBox.shrink();
+
+    return ValueListenableBuilder<int>(
+      valueListenable: _gameTimeLeft,
+      builder: (context, timeLeft, child) {
+        final timeRatio = timeLeft / _gameTimeTotal;
+        final Color timerColor =
+            timeRatio > 0.5
+                ? AppColors.successGreen
+                : timeRatio > 0.25
+                ? AppColors.warningOrange
+                : AppColors.errorRed;
+
+        return Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                if (!_answered)
+                  AnimatedContainer(
+                    duration: const Duration(milliseconds: 400),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 6,
+                    ),
+                    decoration: BoxDecoration(
+                      color: timerColor.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: timerColor),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.timer_rounded, size: 16, color: timerColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$timeLeft s',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: timerColor,
+                            fontSize: 15,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (!_answered)
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: timeRatio,
+                  backgroundColor: Colors.grey.shade200,
+                  valueColor: AlwaysStoppedAnimation<Color>(timerColor),
+                  minHeight: 8,
+                ),
+              ),
+            const SizedBox(height: 16),
+          ],
+        );
+      },
     );
   }
 
@@ -11549,15 +12664,16 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                 StyledCard(
                       child: Column(
                         children: [
+                          // Indique le type/format de la question courante
                           Text(
-                            gameType,
+                            'Format : $gameType',
                             style: Theme.of(context).textTheme.headlineSmall,
                             textAlign: TextAlign.center,
                           ),
                           if (game['theme'] != null) ...[
                             const SizedBox(height: 8),
                             Text(
-                              'ThÃ¨me : ${game['theme']}',
+                              'Thème : ${game['theme']}',
                               style: const TextStyle(
                                 fontStyle: FontStyle.italic,
                                 color: AppColors.textSecondary,
@@ -11571,6 +12687,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                     .fadeIn(duration: 280.ms)
                     .moveY(begin: 14, end: 0, duration: 280.ms),
                 const SizedBox(height: 16),
+                _buildGameTimer(),
                 _buildGameWidget(game, gameType),
                 const SizedBox(height: 8),
                 if (!gameType.contains('Quiz par Indices') &&
@@ -11584,14 +12701,14 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                     decoration: BoxDecoration(
                       color:
                           (_feedback.contains('Correct') ||
-                                  _feedback.contains('GagnÃ©'))
+                                  _feedback.contains('Gagné'))
                               ? const Color(0xFF2ECC71).withOpacity(0.1)
                               : const Color(0xFFE74C3C).withOpacity(0.1),
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color:
                             (_feedback.contains('Correct') ||
-                                    _feedback.contains('GagnÃ©'))
+                                    _feedback.contains('Gagné'))
                                 ? const Color(0xFF2ECC71).withOpacity(0.4)
                                 : const Color(0xFFE74C3C).withOpacity(0.4),
                       ),
@@ -11600,12 +12717,12 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                       children: [
                         Icon(
                           (_feedback.contains('Correct') ||
-                                  _feedback.contains('GagnÃ©'))
+                                  _feedback.contains('Gagné'))
                               ? Icons.check_circle_rounded
                               : Icons.cancel_rounded,
                           color:
                               (_feedback.contains('Correct') ||
-                                      _feedback.contains('GagnÃ©'))
+                                      _feedback.contains('Gagné'))
                                   ? const Color(0xFF2ECC71)
                                   : const Color(0xFFE74C3C),
                           size: 22,
@@ -11620,7 +12737,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                               fontWeight: FontWeight.bold,
                               color:
                                   (_feedback.contains('Correct') ||
-                                          _feedback.contains('GagnÃ©'))
+                                          _feedback.contains('Gagné'))
                                       ? const Color(0xFF2ECC71)
                                       : const Color(0xFFE74C3C),
                             ),
@@ -11658,29 +12775,29 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       'Vrai ou Faux',
       'QCM',
       'Choisir l\'Intrus',
-      'Deux VÃ©ritÃ©s, un Mensonge',
+      'Deux Vérités, un Mensonge',
     ].contains(gameType)) {
       return _buildStandardGameBody(game, gameType);
     }
     if ([
-      'ComplÃ©ter la Phrase',
+      'Compléter la Phrase',
       'Qui suis-je ?',
       'Le Mot Anagramme',
       'Quiz par Indices',
     ].contains(gameType)) {
       String questionText = '';
       String? hintText;
-      if (gameType == 'ComplÃ©ter la Phrase')
+      if (gameType == 'Compléter la Phrase')
         questionText = game['question'] ?? '';
       if (gameType == 'Qui suis-je ?') questionText = game['riddle'] ?? '';
       if (gameType == 'Le Mot Anagramme') {
-        questionText = 'RÃ©organisez ces lettres pour trouver le mot :';
+        questionText = 'Réorganisez ces lettres pour trouver le mot :';
         hintText = game['hint']?.isNotEmpty == true ? game['hint'] : null;
       }
       if (gameType == 'Quiz par Indices') {
         final clues =
-            (game['clues'] as List?)?.join('\n') ?? 'Indices non trouvÃ©s.';
-        questionText = "Trouvez la rÃ©ponse avec ces indices :\n$clues";
+            (game['clues'] as List?)?.join('\n') ?? 'Indices non trouvés.';
+        questionText = "Trouvez la réponse avec ces indices :\n$clues";
       }
       return Column(
         children: [
@@ -11732,7 +12849,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           TextField(
             controller: _answerController,
             decoration: const InputDecoration(
-              labelText: 'Votre rÃ©ponse',
+              labelText: 'Votre réponse',
               border: OutlineInputBorder(),
             ),
             enabled: !_answered,
@@ -11828,7 +12945,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           if (!_answered)
             ElevatedButton(
               onPressed: _checkChronology,
-              child: const Text('VÃ©rifier l\'ordre'),
+              child: const Text('Vérifier l\'ordre'),
             ),
         ],
       );
@@ -11846,8 +12963,8 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         children: [
           Text(
             displayMode == 'imageToDefinition'
-                ? 'Associez chaque image Ã  sa dÃ©finition :'
-                : 'Associez chaque dÃ©finition Ã  son mot :',
+                ? 'Associez chaque image à sa définition :'
+                : 'Associez chaque définition à son mot :',
             style: const TextStyle(fontSize: 18),
             textAlign: TextAlign.center,
           ),
@@ -11895,7 +13012,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           if (!_answered)
             ElevatedButton(
               onPressed: _checkMatches,
-              child: const Text('VÃ©rifier les associations'),
+              child: const Text('Vérifier les associations'),
             ),
         ],
       );
@@ -11948,8 +13065,8 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         },
       );
     }
-    // NOUVEAU: Logique d'affichage pour Mot MystÃ¨re
-    if (gameType.contains('Mot MystÃ¨re')) {
+    // NOUVEAU: Logique d'affichage pour Mot Mystère
+    if (gameType.contains('Mot Mystère')) {
       final word = (game['word'] as String? ?? '').toUpperCase();
       return Column(
         children: [
@@ -11988,7 +13105,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             ),
           ),
           const SizedBox(height: 12),
-          // Affichage des tentatives prÃ©cÃ©dentes
+          // Affichage des tentatives précédentes
           ..._motMystereGuesses.map((guess) {
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 3),
@@ -12083,7 +13200,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
               label: const Text('Proposer'),
             ),
           ],
-          // Clavier virtuel montrant les lettres utilisÃ©es
+          // Clavier virtuel montrant les lettres utilisées
           const SizedBox(height: 16),
           Builder(
             builder: (_) {
@@ -12145,8 +13262,8 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         ],
       );
     }
-    // NOUVEAU JEU: Quiz Ã‰clair
-    if (gameType.contains('Quiz Ã‰clair')) {
+    // NOUVEAU JEU: Quiz Éclair
+    if (gameType.contains('Quiz Éclair')) {
       return _buildQuizEclairWidget(game);
     }
     // NOUVEAU JEU: Estimation
@@ -12250,7 +13367,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        'RÃ©pondre maintenant = +$pot point${pot > 1 ? "s" : ""}',
+                        'Répondre maintenant = +$pot point${pot > 1 ? "s" : ""}',
                         style: const TextStyle(
                           fontSize: 13,
                           color: Color(0xFF6C3FC7),
@@ -12274,7 +13391,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           TextField(
             controller: _answerController,
             decoration: const InputDecoration(
-              labelText: 'Votre rÃ©ponse',
+              labelText: 'Votre réponse',
               border: OutlineInputBorder(),
             ),
             enabled: !_answered,
@@ -12337,7 +13454,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                 if (unit != null && unit.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Chip(
-                    label: Text('UnitÃ© : $unit'),
+                    label: Text('Unité : $unit'),
                     backgroundColor: const Color(0xFF6C3FC7).withOpacity(0.1),
                   ),
                 ],
@@ -12371,7 +13488,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             ),
           ),
         ] else ...[
-          // Barre de progression de prÃ©cision
+          // Barre de progression de précision
           Builder(
             builder: (_) {
               final userVal =
@@ -12384,7 +13501,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
               return Column(
                 children: [
                   Text(
-                    'PrÃ©cision : ${(accuracy * 100).toStringAsFixed(1)}%',
+                    'Précision : ${(accuracy * 100).toStringAsFixed(1)}%',
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 16,
@@ -12436,7 +13553,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     } else if (game['question'] is String) {
       questionData['text'] = game['question'];
     } else {
-      questionData['text'] = 'Question non trouvÃ©e.';
+      questionData['text'] = 'Question non trouvée.';
     }
 
     if (gameType.contains('Vrai ou Faux')) {
@@ -12455,10 +13572,18 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     } else if (gameType.contains('Choisir l\'Intrus')) {
       options = List<dynamic>.from(game['options'] ?? []);
       correctAnswer = game['intruder']?.toString() ?? '';
-    } else if (gameType.contains('Deux VÃ©ritÃ©s')) {
+    } else if (gameType.contains('Deux Vérités') ||
+        gameType.contains('Deux Vérités')) {
       options = List<dynamic>.from(game['statements'] ?? []);
       correctAnswer = game['lie']?.toString() ?? '';
       questionData['text'] = "Identifiez le mensonge parmi ces affirmations :";
+    } else if (gameType.contains('Quiz Éclair') ||
+        gameType.contains('Quiz Eclair')) {
+      options = List<dynamic>.from(
+        game['choices'] ?? game['options'] ?? ['Vrai', 'Faux', 'Peut-Être'],
+      );
+      correctAnswer =
+          game['correct']?.toString() ?? game['answer']?.toString() ?? '';
     }
 
     Widget questionWidget = Column(
