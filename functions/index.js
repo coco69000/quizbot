@@ -5,7 +5,6 @@ admin.initializeApp();
 
 const { defineSecret } = require("firebase-functions/params");
 const DEEPSEEK_API_KEY = defineSecret("DEEPSEEK_API_KEY");
-const PIXABAY_API_KEY = defineSecret("PIXABAY_API_KEY");
 
 const DEEPSEEK_API_URL = "https://api.siliconflow.com/v1/chat/completions";
 
@@ -221,8 +220,8 @@ exports.generateQuiz = onCall({ cors: true, maxInstances: 10, timeoutSeconds: 12
     }
 });
 
-// Pixabay (Non-VIP : 300/jour | VIP : Illimité)
-exports.fetchPixabayImage = onCall({ cors: true, maxInstances: 10, secrets: [PIXABAY_API_KEY] }, async (request) => {
+// Openverse (Non-VIP : 300/jour | VIP : Illimité)
+exports.fetchOpenverseImage = onCall({ cors: true, maxInstances: 10 }, async (request) => {
     if (!request.auth) {
         throw new HttpsError("unauthenticated", "Accès refusé.");
     }
@@ -234,14 +233,11 @@ exports.fetchPixabayImage = onCall({ cors: true, maxInstances: 10, secrets: [PIX
         const userDoc = await t.get(userRef);
         if (!userDoc.exists) return;
         const userData = userDoc.data();
-        const isVip = userData.isVip === true;
-
-        // VIP = Illimité sur Pixabay
-        if (isVip) return;
+        if (userData.isVip === true) return; // VIP = Illimité
 
         const now = new Date();
-        const lastReset = userData.lastPixabayReset ? userData.lastPixabayReset.toDate() : new Date(0);
-        let count = userData.dailyPixabayCount || 0;
+        const lastReset = userData.lastOpenverseReset ? userData.lastOpenverseReset.toDate() : new Date(0);
+        let count = userData.dailyOpenverseCount || 0;
 
         if (now.getUTCDate() !== lastReset.getUTCDate() ||
             now.getUTCMonth() !== lastReset.getUTCMonth() ||
@@ -249,14 +245,13 @@ exports.fetchPixabayImage = onCall({ cors: true, maxInstances: 10, secrets: [PIX
             count = 0;
         }
 
-        // Limite Non-VIP = 300 par jour
         if (count >= 300) {
-            throw new HttpsError("resource-exhausted", "Quota quotidien Pixabay atteint (300/jour). Devenez VIP pour la recherche illimitée !");
+            throw new HttpsError("resource-exhausted", "Quota quotidien Openverse atteint (300/jour).");
         }
 
         t.set(userRef, {
-            dailyPixabayCount: count + 1,
-            lastPixabayReset: admin.firestore.FieldValue.serverTimestamp()
+            dailyOpenverseCount: count + 1,
+            lastOpenverseReset: admin.firestore.FieldValue.serverTimestamp()
         }, { merge: true });
     });
 
@@ -264,24 +259,26 @@ exports.fetchPixabayImage = onCall({ cors: true, maxInstances: 10, secrets: [PIX
         const query = request.data.query;
         if (!query) throw new HttpsError("invalid-argument", "Query manquante.");
 
-        const url = `https://pixabay.com/api/?key=${PIXABAY_API_KEY.value()}&q=${encodeURIComponent(query)}&image_type=photo&per_page=3&lang=fr`;
+        // Appel de l'API Openverse en mode anonyme (limité mais suffisant, pas besoin de clé)
+        const url = `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}&page_size=3`;
         const response = await fetch(url);
 
         if (!response.ok) {
             if (response.status === 429) {
-                return { hits: [{ webformatURL: "https://via.placeholder.com/640x480.png?text=Image+Non+Disponible" }] };
+                // Rate limit de l'API Openverse (trop de requêtes)
+                return { results: [{ url: "https://via.placeholder.com/640x480.png?text=Image+Non+Disponible" }] };
             }
-            throw new HttpsError("internal", `Erreur Pixabay: ${response.status}`);
+            throw new HttpsError("internal", `Erreur Openverse: ${response.status}`);
         }
 
         return await response.json();
     } catch (error) {
-        logger.error("Error fetching image from Pixabay", error);
-        throw new HttpsError("internal", "Erreur lors de l'appel Pixabay.");
+        logger.error("Error fetching image from Openverse", error);
+        throw new HttpsError("internal", "Erreur lors de l'appel Openverse.");
     }
 });
 
-// Génération d'images par IA SiliconFlow FLUX.1-schnell (VIP uniquement - Max 50/jour)
+// Génération IA FLUX.1-schnell (VIP uniquement - Max 50/jour)
 const SILICONFLOW_IMAGE_URL = "https://api.siliconflow.com/v1/images/generations";
 
 exports.generateAIImage = onCall({ cors: true, maxInstances: 10, timeoutSeconds: 60, secrets: [DEEPSEEK_API_KEY] }, async (request) => {
@@ -312,7 +309,7 @@ exports.generateAIImage = onCall({ cors: true, maxInstances: 10, timeoutSeconds:
         }
 
         if (count >= 50) {
-            throw new HttpsError("resource-exhausted", "Limite quotidienne de 50 générations d'images par IA atteinte (50/jour).");
+            throw new HttpsError("resource-exhausted", "Limite quotidienne de 50 générations d'images par IA atteinte pour aujourd'hui.");
         }
 
         t.set(userRef, {
@@ -398,6 +395,11 @@ exports.submitGameResult = onCall({ cors: true, maxInstances: 10 }, async (reque
             statsDoc = await transaction.get(statsRef);
         }
 
+        const quizzesSnapshot = await transaction.get(
+            db.collection('quizzes').where('userId', '==', uid)
+        );
+        const createdQuizzesCount = quizzesSnapshot.docs ? quizzesSnapshot.docs.length : 0;
+
         // --- LOGIC & CALCULATIONS ---
         let userData = userDoc.exists ? userDoc.data() : { score: 0, iq: 100.0, totalGamesPlayed: 0 };
         let currentGlobalScore = userData.score || 0;
@@ -419,6 +421,8 @@ exports.submitGameResult = onCall({ cors: true, maxInstances: 10 }, async (reque
                 wasAbandoned = true;
             }
         }
+
+        let totalPossibleScore = 0;
 
         if (gameType === 'online') {
             if (!playerScores || typeof playerScores !== 'object') {
@@ -456,11 +460,11 @@ exports.submitGameResult = onCall({ cors: true, maxInstances: 10 }, async (reque
                 pointsToAdd = pointsGained;
             }
 
-            let totalPossibleScore = calculateTotalPossibleScore(gamesPlayed, true);
+            totalPossibleScore = calculateTotalPossibleScore(gamesPlayed, true);
             successRate = totalPossibleScore > 0 ? Math.min(1.0, userScore / totalPossibleScore) : 0.0;
         } else {
             pointsToAdd = isReplay ? 0 : (parseFloat(pointsScored) || 0);
-            let totalPossibleScore = calculateTotalPossibleScore(gamesPlayed, false);
+            totalPossibleScore = calculateTotalPossibleScore(gamesPlayed, false);
             const numericPoints = parseFloat(pointsScored) || 0;
             successRate = totalPossibleScore > 0 ? Math.min(1.0, numericPoints / totalPossibleScore) : 0.0;
         }
@@ -525,10 +529,69 @@ exports.submitGameResult = onCall({ cors: true, maxInstances: 10 }, async (reque
         }
 
         // --- ALL WRITES AFTER ---
+        
+        // --- LOGIQUE DES BADGES ---
+        let earnedBadges = userData.badges || [];
+        let newUnlockedBadges = [];
+        let totalWins = userData.totalWins || 0;
+        
+        if (wasWinnerThisGame) totalWins += 1;
+        const totalGamesNow = isReplay ? totalGamesPlayedCount : totalGamesPlayedCount + 1;
+        const newScore = currentGlobalScore + pointsToAdd;
+
+        function checkAndAward(id) {
+            if (!earnedBadges.includes(id)) {
+                earnedBadges.push(id);
+                newUnlockedBadges.push(id);
+            }
+        }
+
+        // Badges de Participation
+        if (totalGamesNow >= 1) checkAndAward('first_game');
+        if (totalGamesNow >= 10) checkAndAward('amateur');
+        if (totalGamesNow >= 50) checkAndAward('veteran');
+        if (totalGamesNow >= 100) checkAndAward('expert');
+
+        // Badges de Création de Quiz
+        if (createdQuizzesCount >= 5) checkAndAward('creator_5');
+        if (createdQuizzesCount >= 10) checkAndAward('creator_10');
+        if (createdQuizzesCount >= 50) checkAndAward('creator_50');
+
+        // Badges de Victoire en ligne
+        if (totalWins >= 1) checkAndAward('first_win');
+        if (totalWins >= 10) checkAndAward('champion');
+        if (totalWins >= 50) checkAndAward('legend');
+
+        // Badges de QI
+        if (newIQ >= 110) checkAndAward('iq_110');
+        if (newIQ >= 130) checkAndAward('iq_130');
+        if (newIQ >= 150) checkAndAward('iq_150');
+
+        // Badges de Score
+        if (newScore >= 500) checkAndAward('score_500');
+        if (newScore >= 2000) checkAndAward('score_2000');
+        if (newScore >= 5000) checkAndAward('score_5000');
+
+        // Badges de Performance et Thèmes
+        if (successRate >= 0.99) checkAndAward('perfect_score');
+        if (newIQ > currentIQ) checkAndAward('fast_learner');
+        if (totalPossibleScore >= 15) checkAndAward('survivor');
+
+        const themeStr = theme || '';
+        if (themeStr.includes('Histoire') && successRate >= 0.7) checkAndAward('history_buff');
+        if (themeStr.includes('Sciences') && successRate >= 0.7) checkAndAward('science_buff');
+        if (themeStr.includes('Géographie') && successRate >= 0.7) checkAndAward('geo_buff');
+        if (themeStr.includes('Art') && successRate >= 0.7) checkAndAward('art_buff');
+        if (themeStr.includes('Cinéma') && successRate >= 0.7) checkAndAward('cinema_buff');
+        if (themeStr.includes('Sport') && successRate >= 0.7) checkAndAward('sport_buff');
+
+        // Mise à jour de l'utilisateur avec les badges
         transaction.set(userRef, {
-            score: currentGlobalScore + pointsToAdd,
+            score: newScore,
             iq: newIQ,
-            totalGamesPlayed: isReplay ? totalGamesPlayedCount : totalGamesPlayedCount + 1
+            totalGamesPlayed: totalGamesNow,
+            totalWins: totalWins,
+            badges: earnedBadges
         }, { merge: true });
 
         const historyRef = db.collection('userGameHistory').doc();
@@ -570,12 +633,14 @@ exports.submitGameResult = onCall({ cors: true, maxInstances: 10 }, async (reque
             transaction.set(statsRef, statsData, { merge: true });
         }
 
+        // On retourne la liste des nouveaux badges débloqués !
         return {
             success: true,
             newIQ: newIQ,
-            newScore: currentGlobalScore + pointsToAdd,
+            newScore: newScore,
             pointsAdded: pointsToAdd,
-            wasWinner: wasWinnerThisGame
+            wasWinner: wasWinnerThisGame,
+            newBadges: newUnlockedBadges 
         };
     });
 });

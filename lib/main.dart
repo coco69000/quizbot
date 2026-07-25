@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -17,6 +17,9 @@ import 'package:flutter_animate/flutter_animate.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:typed_data';
 
 // --- CLASSE POUR LE FEEDBACK DU JEU "MOT MYSTÈRE" ---
 // Représente le statut de chaque lettre d'une tentative.
@@ -118,6 +121,152 @@ class AppColors {
 class AppRadii {
   static const double card = 24;
   static const double button = 16;
+}
+
+class AppBadges {
+  static final List<Map<String, dynamic>> allBadges = [
+    {'id': 'first_game', 'name': 'Débutant', 'desc': 'Jouer votre première partie.', 'icon': '🎮', 'color': Colors.blue},
+    {'id': 'amateur', 'name': 'Amateur', 'desc': 'Jouer 10 parties.', 'icon': '🎲', 'color': Colors.lightBlue},
+    {'id': 'veteran', 'name': 'Vétéran', 'desc': 'Jouer 50 parties.', 'icon': '⚔️', 'color': Colors.purple},
+    {'id': 'expert', 'name': 'Expert', 'desc': 'Jouer 100 parties.', 'icon': '🏅', 'color': Colors.orange},
+    {'id': 'first_win', 'name': 'Première Victoire', 'desc': 'Gagner en ligne.', 'icon': '🏆', 'color': Colors.amber},
+    {'id': 'champion', 'name': 'Champion', 'desc': 'Gagner 10 parties en ligne.', 'icon': '👑', 'color': Colors.amberAccent},
+    {'id': 'legend', 'name': 'Légende', 'desc': 'Gagner 50 parties en ligne.', 'icon': '🌟', 'color': Colors.yellowAccent},
+    {'id': 'iq_110', 'name': 'Esprit Vif', 'desc': 'Atteindre 110 de QI.', 'icon': '💡', 'color': Colors.teal},
+    {'id': 'iq_130', 'name': 'Génie', 'desc': 'Atteindre 130 de QI.', 'icon': '🧠', 'color': Colors.indigo},
+    {'id': 'iq_150', 'name': 'Einstein', 'desc': 'Atteindre 150 de QI.', 'icon': '⚛️', 'color': Colors.deepPurple},
+    {'id': 'score_500', 'name': 'Apprenti', 'desc': 'Atteindre 500 points.', 'icon': '🪙', 'color': Colors.grey},
+    {'id': 'score_2000', 'name': 'Connaisseur', 'desc': 'Atteindre 2000 points.', 'icon': '🥈', 'color': Colors.blueGrey},
+    {'id': 'score_5000', 'name': 'Maître', 'desc': 'Atteindre 5000 points.', 'icon': '🥇', 'color': Colors.amber},
+    {'id': 'perfect_score', 'name': 'Perfection', 'desc': '100% de réussite.', 'icon': '🎯', 'color': Colors.redAccent},
+    {'id': 'history_buff', 'name': 'Historien', 'desc': 'Bon score en Histoire.', 'icon': '🏛️', 'color': Colors.brown},
+    {'id': 'science_buff', 'name': 'Scientifique', 'desc': 'Bon score en Sciences.', 'icon': '🔬', 'color': Colors.cyan},
+    {'id': 'geo_buff', 'name': 'Explorateur', 'desc': 'Bon score en Géographie.', 'icon': '🌍', 'color': Colors.green},
+    {'id': 'art_buff', 'name': 'Artiste', 'desc': 'Bon score en Art.', 'icon': '🎨', 'color': Colors.pink},
+    {'id': 'cinema_buff', 'name': 'Cinéphile', 'desc': 'Bon score en Cinéma.', 'icon': '🎬', 'color': Colors.black87},
+    {'id': 'sport_buff', 'name': 'Athlète', 'desc': 'Bon score en Sport.', 'icon': '⚽', 'color': Colors.deepOrange},
+    {'id': 'survivor', 'name': 'Survivant', 'desc': 'Finir un long quiz.', 'icon': '🛡️', 'color': Colors.red},
+    {'id': 'fast_learner', 'name': 'Évolution', 'desc': 'Améliorer son QI.', 'icon': '📈', 'color': Colors.lightGreen},
+    {'id': 'creator_5', 'name': 'Créateur Novice', 'desc': 'Créer 5 quiz.', 'icon': '📝', 'color': Colors.indigoAccent},
+    {'id': 'creator_10', 'name': 'Créateur Confirmé', 'desc': 'Créer 10 quiz.', 'icon': '🏗️', 'color': Colors.deepOrangeAccent},
+    {'id': 'creator_50', 'name': 'Maître Créateur', 'desc': 'Créer 50 quiz.', 'icon': '🎨', 'color': Colors.purpleAccent},
+  ];
+
+  static Future<void> checkCreationBadges(BuildContext context, String uid) async {
+    try {
+      final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
+      final userDoc = await userRef.get();
+      if (!userDoc.exists) return;
+
+      final currentBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
+      final quizzesSnap = await FirebaseFirestore.instance
+          .collection('quizzes')
+          .where('userId', isEqualTo: uid)
+          .get();
+      final count = quizzesSnap.docs.length;
+
+      List<String> newBadges = [];
+      if (count >= 5 && !currentBadges.contains('creator_5')) newBadges.add('creator_5');
+      if (count >= 10 && !currentBadges.contains('creator_10')) newBadges.add('creator_10');
+      if (count >= 50 && !currentBadges.contains('creator_50')) newBadges.add('creator_50');
+
+      if (newBadges.isNotEmpty) {
+        await userRef.update({
+          'badges': FieldValue.arrayUnion(newBadges),
+        });
+        if (context.mounted) {
+          showNewBadges(context, newBadges);
+        }
+      }
+    } catch (e) {
+      print('Erreur vérification badges création: $e');
+    }
+  }
+
+  static void showNewBadges(BuildContext context, List<dynamic> newBadgeIds) {
+    for (String id in newBadgeIds.cast<String>()) {
+      final badge = allBadges.firstWhere((b) => b['id'] == id, orElse: () => {});
+      if (badge.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Text(badge['icon'], style: const TextStyle(fontSize: 28)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('NOUVEAU BADGE DÉBLOQUÉ !', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white70)),
+                      Text(badge['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white)),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            backgroundColor: badge['color'],
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 5),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ),
+        );
+      }
+    }
+  }
+
+  static Widget buildBadgeGrid(List<String> earnedIds) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 8,
+        mainAxisSpacing: 8,
+        childAspectRatio: 0.85,
+      ),
+      itemCount: allBadges.length,
+      itemBuilder: (context, index) {
+        final badge = allBadges[index];
+        final isEarned = earnedIds.contains(badge['id']);
+        final Color badgeColor = badge['color'] as Color;
+        return Tooltip(
+          message: '${badge['name']}\n${badge['desc']}',
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 300),
+            opacity: isEarned ? 1.0 : 0.3,
+            child: Card(
+              elevation: isEarned ? 4 : 0,
+              color: isEarned ? badgeColor.withValues(alpha: 0.15) : Colors.grey.shade200,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(
+                  color: isEarned ? badgeColor : Colors.grey.shade400,
+                  width: isEarned ? 2 : 1,
+                ),
+              ),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(badge['icon'], style: const TextStyle(fontSize: 28)),
+                  const SizedBox(height: 6),
+                  Text(
+                    badge['name'],
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: isEarned ? FontWeight.bold : FontWeight.normal,
+                      color: isEarned ? badgeColor : Colors.grey.shade700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }
 
 class StyledCard extends StatelessWidget {
@@ -335,6 +484,13 @@ class GameResultsPage extends StatelessWidget {
       final data = result.data as Map<dynamic, dynamic>;
       final pointsAdded = data['pointsAdded'] ?? 0;
       final wasWinnerThisGame = data['wasWinner'] ?? false;
+
+      // --- AJOUT BADGES ---
+      final newBadges = data['newBadges'] as List<dynamic>? ?? [];
+      if (newBadges.isNotEmpty && context.mounted) {
+        AppBadges.showNewBadges(context, newBadges);
+      }
+      // --------------------
 
       // Notifications
       if (wasWinnerThisGame && context.mounted) {
@@ -1254,9 +1410,8 @@ class _HomePageState extends State<HomePage> {
   int _monthlyGenerationsCount = 0;
   int _dailyGenerationsCount = 0;
   int _dailyImageGenerationsCount = 0;
-  String _imageSource = 'pixabay';
   int _dailyAiImageCount = 0;
-  int _dailyPixabayCount = 0;
+  int _dailyOpenverseCount = 0;
   bool _isGenerating = false;
 
   DisplayMode _qcmQuestionMode = DisplayMode.text;
@@ -1300,7 +1455,7 @@ class _HomePageState extends State<HomePage> {
           _dailyGenerationsCount = 0;
           _dailyImageGenerationsCount = 0;
           _dailyAiImageCount = 0;
-          _dailyPixabayCount = 0;
+          _dailyOpenverseCount = 0;
         });
       }
       return;
@@ -1337,7 +1492,7 @@ class _HomePageState extends State<HomePage> {
             _dailyImageGenerationsCount =
                 data['dailyImageGenerationsCount'] ?? 0;
             _dailyAiImageCount = data['dailyAiImageCount'] ?? 0;
-            _dailyPixabayCount = data['dailyPixabayCount'] ?? 0;
+            _dailyOpenverseCount = data['dailyOpenverseCount'] ?? 0;
 
             _checkAndResetGenerationCounts(data);
 
@@ -1391,7 +1546,7 @@ class _HomePageState extends State<HomePage> {
         'dailyGenerationsCount': 0,
         'dailyImageGenerationsCount': 0,
         'dailyAiImageCount': 0,
-        'dailyPixabayCount': 0,
+        'dailyOpenverseCount': 0,
         'lastDailyReset': FieldValue.serverTimestamp(),
       });
       if (mounted) {
@@ -1399,7 +1554,7 @@ class _HomePageState extends State<HomePage> {
           _dailyGenerationsCount = 0;
           _dailyImageGenerationsCount = 0;
           _dailyAiImageCount = 0;
-          _dailyPixabayCount = 0;
+          _dailyOpenverseCount = 0;
         });
       }
     }
@@ -1477,6 +1632,13 @@ class _HomePageState extends State<HomePage> {
       final data = result.data as Map<dynamic, dynamic>;
       final pointsAdded = data['pointsAdded'] ?? 0;
 
+      // --- AJOUT BADGES ---
+      final newBadges = data['newBadges'] as List<dynamic>? ?? [];
+      if (newBadges.isNotEmpty && mounted) {
+        AppBadges.showNewBadges(context, newBadges);
+      }
+      // --------------------
+
       if (pointsAdded == 0 && points > 0) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -1523,6 +1685,9 @@ class _HomePageState extends State<HomePage> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Quiz sauvegardé !')));
+      if (_currentUser?.uid != null) {
+        AppBadges.checkCreationBadges(context, _currentUser!.uid);
+      }
       return quizRef.id;
     } catch (e) {
       setState(() {
@@ -1628,11 +1793,11 @@ class _HomePageState extends State<HomePage> {
           break;
         case MemoryDisplayMode.definitionToImage:
           memoryInstruction =
-              '- "Memory": {"type": "Memory", "displayMode": "definitionToImage", "pairs": [{"definition": "...", "image_description": "..."}, ...], "difficulty": 1-10} (Génère $pairCount, toutes les définitions doivent être uniques)';
+              '- "Memory": {"type": "Memory", "displayMode": "definitionToImage", "pairs": [{"definition": "...", "image_description": "...", "image_source": "openverse|ai"}, ...], "difficulty": 1-10} (Génère $pairCount)';
           break;
         case MemoryDisplayMode.imagePair:
           memoryInstruction =
-              '- "Memory": {"type": "Memory", "displayMode": "imagePair", "items": [{"image_description": "...", "text_label": "..."}, ...], "difficulty": 1-10} (Génère $pairCount, un item par paire, tous les text_label doivent être uniques)';
+              '- "Memory": {"type": "Memory", "displayMode": "imagePair", "items": [{"image_description": "...", "image_source": "openverse|ai", "text_label": "..."}, ...], "difficulty": 1-10} (Génère $pairCount)';
           break;
       }
     }
@@ -1645,7 +1810,7 @@ class _HomePageState extends State<HomePage> {
           break;
         case MatchDisplayMode.imageToDefinition:
           matchInstruction =
-              '- "Relier": {"type": "Relier", "displayMode": "imageToDefinition", "pairs": [{"image_description": "...", "definition": "..."}, ...], "difficulty": 1-10}';
+              '- "Relier": {"type": "Relier", "displayMode": "imageToDefinition", "pairs": [{"image_description": "...", "image_source": "openverse|ai", "definition": "..."}, ...], "difficulty": 1-10}';
           break;
       }
     }
@@ -1657,10 +1822,10 @@ class _HomePageState extends State<HomePage> {
           questionStructure = '"text": "..."';
           break;
         case DisplayMode.image:
-          questionStructure = '"image_description": "..."';
+          questionStructure = '"image_description": "...", "image_source": "openverse|ai"';
           break;
         case DisplayMode.textAndImage:
-          questionStructure = '"text": "...", "image_description": "..."';
+          questionStructure = '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
           break;
       }
       String optionStructure;
@@ -1669,63 +1834,73 @@ class _HomePageState extends State<HomePage> {
           optionStructure = '"text": "..."';
           break;
         case DisplayMode.image:
-          optionStructure = '"image_description": "..."';
+          optionStructure = '"image_description": "...", "image_source": "openverse|ai"';
           break;
         case DisplayMode.textAndImage:
-          optionStructure = '"text": "...", "image_description": "..."';
+          optionStructure = '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
           break;
       }
       qcmInstruction =
-          '- "QCM": {"type": "QCM", "question": {$questionStructure}, "options": [{$optionStructure}, {$optionStructure}, {$optionStructure}, {$optionStructure}], "correct": "texte identique au champ text de la bonne option", "hint": "Indice pour trouver la réponse sans la donner", "difficulty": 1-10} // IMPORTANT: Le champ image_description doit OBLIGATOIREMENT contenir 1 à 3 mots-clés visuels clairs en français pour illustrer la réponse (ex: "loup gris dans la neige"). Ne le laisse JAMAIS vide.';
+          '- "QCM": {"type": "QCM", "question": {$questionStructure}, "options": [{$optionStructure}, ...], "correct": "texte exact de la bonne option", "hint": "Indice", "difficulty": 1-10} (Génère entre 2 et 5 options selon la pertinence)';
     }
 
     final String allowedTypesText =
         _aiDecideGames
-            ? "Choisis librement et avec variété parmi TOUS les types de jeux disponibles (QCM, Vrai ou Faux, Choisir l'Intrus, Deux Vérités une Erreur, Pendu, Relier, Memory, Mot Mystère, Estimation, Quiz par Indices, Chronologie)."
+            ? "Choisis librement et de façon TRÈS VARIÉE parmi TOUS les types de jeux disponibles (QCM, Vrai/Faux, Intrus, Pendu, Relier, Memory, Mot Mystère, Estimation, Quiz par Indices, Chronologie)."
             : selectedGameNames.join(', ');
 
     try {
       String systemPromptContent = '''
-Tu es un expert en création de quiz éducatifs. 
-Ta mission est de transformer le texte fourni en un QUIZ composé de plusieurs QUESTIONS/ÉPREUVES.
-Tu dois retourner UNIQUEMENT un tableau JSON valide, sans AUCUN texte avant ou après le JSON. Aucune explication, aucun commentaire.
+Tu es un concepteur de quiz éducatifs très créatif et imprévisible. 
+Ta mission est de transformer le texte fourni en un QUIZ sous forme de tableau JSON valide.
 
-Types de jeux autorisés pour les questions : $allowedTypesText.
+Types de jeux autorisés : $allowedTypesText.
 
-RÈGLE DE STRUCTURE ET VOCABULAIRE :
-- Un QUIZ contient plusieurs QUESTIONS (ou ÉPREUVES).
-- Chaque question/épreuve utilise l'un des types de jeux sélectionnés (ex: 3 questions de type QCM, 2 questions de type Vrai/Faux, 1 épreuve de type Memory).
-- Ne confonds pas "un jeu" et "une question" : une question QCM est UNE épreuve du quiz, un plateau Memory est UNE épreuve du quiz.
-- Si le texte est riche, génère plusieurs questions pour chaque type de jeu sélectionné (ex: 3 à 5 questions QCM, 2 à 3 questions Vrai/Faux, etc.).
-- Si l'utilisateur demande "5 questions", génère exactement 5 questions au total réparties sur les types choisis.
+RÈGLE DÉCISIVE POUR LE CHOIX DU FOURNISSEUR D'IMAGE (`image_source`) :
+Pour chaque champ `image_description`, tu DOIS impérativement ajouter un champ `image_source` associé dans le même objet JSON.
 
-IMPORTANT : Base-toi UNIQUEMENT sur le texte fourni par l'utilisateur.
+RÈGLE D'OR (JEUX CENTRÉS SUR L'IMAGE) :
+Si l'épreuve repose DIRECTEMENT sur la reconnaissance ou l'association d'images pour jouer (ex: Memory visuel, Relier Image-Définition, QCM avec questions ou options en images), la clarté visuelle doit être ABSOLUE et SANS ERREUR.
+- Choisis `"ai"` (IA Générative FLUX) dès qu'il y a le MOINDRE DOUTE qu'une recherche web puisse donner un visuel ambigu, flou, incomplet ou approximatif. L'IA doit créer un visuel sur-mesure, net et 100% évident pour le joueur.
+- Choisis `"openverse"` UNIQUEMENT si le sujet est d'une simplicité enfantine et universelle (ex: "pomme", "chat", "Tour Eiffel").
+
+1. `image_source`: "openverse" (POUR CONCEPTS SIMPLES ET TRIVIAUX) :
+   - À utiliser quand le sujet est un objet/animal/lieu réel et ultra-simple (1 à 3 mots-clés simples et clairs en anglais, ex: "lion safari", "eiffel tower", "red apple").
+
+2. `image_source`: "ai" (JEUX VISUELS, SUJETS PRÉCIS, RARETÉS ET SCÈNES SUR-MESURE) :
+   - À utiliser pour tout jeu visuel (Memory, Relier visuel, QCM visuel) non basique, sujet spécifique, historique, scientifique, rare ou imaginaire (prompt descriptif complet et net en anglais).
+
+IMPORTANT : Base-toi UNIQUEMENT sur le texte et les consignes fournies par l'utilisateur.
 ''';
 
-      // NOUVEAU : Injection du contexte si modification existante
       if (_quizToComplete != null && _modifyExistingGames) {
         systemPromptContent += '''
-\n\nATTENTION : Tu modifies actuellement un quiz existant. L'utilisateur te demande de le modifier ou de le compléter selon sa consigne.
-Voici les jeux actuels de ce quiz au format JSON :
+\n\nATTENTION : Tu modifies un quiz existant. Voici les jeux actuels au format JSON :
 ${jsonEncode(_quizToComplete!['games'])}
-
-Génère la NOUVELLE liste complète des jeux en conservant, modifiant, ou ajoutant des éléments selon la consigne et les types de jeux demandés. Retourne UNIQUEMENT le tableau JSON complet.
+Génère la NOUVELLE liste complète de manière créative et retourne UNIQUEMENT le tableau JSON complet.
 ''';
       } else {
-        // Le reste de vos règles habituelles
-        systemPromptContent += '''
-RÈGLE DE QUANTITÉ OBLIGATOIRE :
-- Tu DOIS génère au moins 1 jeu de CHAQUE type demandé, sans jamais en omettre un seul.
-- Si le texte est riche (long, factuel, encyclopédique), génère PLUSIEURS jeux par type : 3 à 5 QCM, 2 à 3 Vrai/Faux, 2 Chronologie, etc. Ne te limite JAMAIS à 1 seul par type si le contenu le permet.
-- Si l'utilisateur précise un nombre (ex: '5 questions', '10 QCM'), respecte ce nombre EXACTEMENT pour ce type.
-- Pour "Le Mot Anagramme" et "Mot Mystère" : maximum 2-3 car c'est vite répétitif.
-- Pour "Relier" : génère entre 3 et 8 paires par jeu, selon la quantité de relations dans le texte.
+        if (_aiDecideGames) {
+          systemPromptContent += '''
+RÈGLE DE CRÉATIVITÉ ABSOLUE (L'IA DÉCIDE) :
+- Ne sois pas répétitif ! Ne crée pas que des QCM.
+- Fais un mélange amusant et dynamique (ex: 1 Pendu, 2 QCM avec 3 choix, 1 Relier, 1 Intrus, 1 Mot Mystère).
+- Adapte le nombre total de jeux à la longueur du texte (entre 3 et 10 jeux au total).
+- Varie la difficulté.
 ''';
+        } else {
+          systemPromptContent += '''
+RÈGLE DE QUANTITÉ ET CRÉATIVITÉ :
+- Tu DOIS générer au moins 1 jeu pour CHAQUE type demandé.
+- Varie le nombre de questions générées en fonction de la taille du texte (pas besoin de forcer 5 questions si le texte est court).
+- Pour les QCM, varie le nombre d'options de réponse (entre 2 et 5 options). Ne fais pas toujours 4 options.
+- Pour "Relier" et "Memory" : entre 3 et 8 paires selon le contexte.
+''';
+        }
       }
 
-      // Ajout de vos règles existantes
       systemPromptContent += '''
-RÈGLE MEMORY : Pour les jeux de type Memory, chaque paire doit avoir un 'word' UNIQUE. N'utilise jamais deux fois le même mot. Génère des paires distinctes et variées.
+RÈGLE MEMORY : Chaque paire doit avoir un 'word' UNIQUE. N'utilise jamais deux fois le même mot.
 ${_aiCustomTimers ? '\nRÈGLE CHRONOMÈTRE (IMPORTANT) : Ajoute systématiquement un champ `"timeLimit"` (entier, en secondes) à chaque jeu généré. Adapte intelligemment ce temps à la complexité et la longueur de la question. (ex: 10 pour un QCM simple, 30 pour un Memory difficile, etc.).' : ''}
 Voici les formats JSON attendus :
 
@@ -1745,7 +1920,7 @@ ${(includeAll || (_selectedGames['Estimation'] ?? false)) ? '- "Estimation": {"t
 ${(includeAll || (_selectedGames['Quiz par Indices'] ?? false)) ? '- "Quiz par Indices": {"type": "Quiz par Indices", "clues": ["Indice 1", "Indice 2", "Indice 3"], "answer": "la réponse exacte", "difficulty": 1-10}' : ''}
 ${(includeAll || (_selectedGames['Quiz Éclair'] ?? false)) ? '- "Quiz Éclair": {"type": "Quiz Éclair", "question": "...", "options": ["Vrai", "Faux", "Peut-être"], "correct": "Vrai", "difficulty": 1-10}' : ''}
 
-Assure-toi que le JSON est strictly valide.
+Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 ''';
 
       print(
@@ -1776,10 +1951,10 @@ Assure-toi que le JSON est strictly valide.
 
       final data = await callSecureAI(
         model: 'mistralai/Mistral-Nemo-Instruct-2407',
-        temperature: 0.2,
+        temperature: 0.8,
         systemMessage: systemPromptContent,
         prompt:
-            'Voici le texte à transformer en jeux : "$text"\n\nRappel: retourne UNIQUEMENT le tableau JSON, sans aucun texte autour.',
+            'Voici le texte à transformer en jeux : "$text"\n\nRappel: retourne UNIQUEMENT le tableau JSON, sois créatif sur le format des questions.',
         imageRequested: imageRequested,
       );
 
@@ -2192,45 +2367,99 @@ Assure-toi que le JSON est strictly valide.
     String key,
   ) async {
     String description = item[key]?.toString().trim() ?? '';
+    String source = item['image_source']?.toString().toLowerCase() ?? 'openverse';
+    bool fromTextFallback = false;
+    
+    // Si l'IA n'a pas fourni de description d'image, on se rabat sur le texte
     if (description.isEmpty && item['text'] != null) {
       description = item['text'].toString().trim();
+      fromTextFallback = true;
     }
     if (description.isEmpty) return;
 
+    // --- NETTOYAGE POUR LA RECHERCHE OPENVERSE ---
+    String searchQuery = description;
+    
+    if ((source == 'openverse' || source == 'pixabay') && (fromTextFallback || description.split(RegExp(r'\s+')).length > 3)) {
+      String cleanQuery = description.replaceAll(RegExp(r'[^\w\sÀ-ÿ]'), ' ');
+      List<String> stopWords = [
+        'le', 'la', 'les', 'l', 'd', 'de', 'du', 'des', 'un', 'une', 'qui', 'que', 'est', 'sont', 
+        'dans', 'avec', 'et', 'ou', 'ce', 'cette', 'ces', 'mon', 'the', 'is', 'are', 'in', 'on', 'of', 'and'
+      ];
+      
+      List<String> words = cleanQuery
+          .split(RegExp(r'\s+'))
+          .where((w) => w.length > 2 && !stopWords.contains(w.toLowerCase()))
+          .toList();
+      
+      if (words.length > 3) {
+        words.sort((a, b) => b.length.compareTo(a.length));
+        words = words.take(3).toList();
+      }
+      searchQuery = words.join(' ');
+    }
+
+    final bool requiresAI = (source == 'ai');
+
     try {
-      if (_isVip && _imageSource == 'ai') {
-        // Génération par IA (VIP Uniquement)
-        if (mounted)
-          setState(
-            () => _status = 'Génération d\'image IA pour "$description"...',
-          );
-        final callable = FirebaseFunctions.instance.httpsCallable(
-          'generateAIImage',
-        );
-        final result = await callable.call({'prompt': description});
-        if (result.data != null && result.data['url'] != null) {
-          item['image_url'] = result.data['url'];
+      if (_isVip) {
+        if (requiresAI) {
+          if (mounted) setState(() => _status = 'Génération IA pour "$description"...');
+          final callableAI = FirebaseFunctions.instance.httpsCallable('generateAIImage');
+          final resultAI = await callableAI.call({'prompt': description});
+          if (resultAI.data != null && resultAI.data['url'] != null) {
+            item['image_url'] = resultAI.data['url'];
+            return;
+          }
+        }
+
+        // CONCEPT SIMPLE -> Openverse
+        if (mounted) setState(() => _status = 'Recherche Openverse pour "$searchQuery"...');
+        final callableOpenverse = FirebaseFunctions.instance.httpsCallable('fetchOpenverseImage');
+        final resultOpenverse = await callableOpenverse.call({'query': searchQuery});
+
+        if (resultOpenverse.data != null &&
+            resultOpenverse.data['results'] != null &&
+            (resultOpenverse.data['results'] as List).isNotEmpty) {
+          item['image_url'] = resultOpenverse.data['results'][0]['url'];
+        } else if (!requiresAI) {
+          // Fallback IA si Openverse ne trouve rien
+          if (mounted) setState(() => _status = 'Aucun résultat. Bascule sur l\'IA pour "$description"...');
+          final callableAI = FirebaseFunctions.instance.httpsCallable('generateAIImage');
+          final resultAI = await callableAI.call({'prompt': description});
+          if (resultAI.data != null && resultAI.data['url'] != null) {
+            item['image_url'] = resultAI.data['url'];
+          }
         }
       } else {
-        // Recherche Pixabay (VIP illimité / Non-VIP 300 par jour)
-        if (mounted)
-          setState(() => _status = 'Recherche Pixabay pour "$description"...');
-        final callable = FirebaseFunctions.instance.httpsCallable(
-          'fetchPixabayImage',
-        );
-        final result = await callable.call({'query': description});
+        // NON-VIP : Banque d'images Openverse uniquement
+        if (mounted) setState(() => _status = 'Recherche Openverse pour "$searchQuery"...');
+        final callable = FirebaseFunctions.instance.httpsCallable('fetchOpenverseImage');
+        final result = await callable.call({'query': searchQuery});
         if (result.data != null &&
-            result.data['hits'] != null &&
-            (result.data['hits'] as List).isNotEmpty) {
-          item['image_url'] = result.data['hits'][0]['webformatURL'];
+            result.data['results'] != null &&
+            (result.data['results'] as List).isNotEmpty) {
+          item['image_url'] = result.data['results'][0]['url'];
         }
       }
     } catch (e) {
-      print('Erreur génération/recherche d\'image : $e');
+      print('Erreur lors du traitement d\'image : $e');
     }
   }
 
   void _playQuiz(List<dynamic> games, String quizText, String? quizId) {
+    if (games.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Veuillez ajouter des questions avant de jouer.'),
+            backgroundColor: Colors.orange,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -2330,6 +2559,21 @@ Assure-toi que le JSON est strictly valide.
   }
 
   void _showOnlineOptions({Map<String, dynamic>? initialQuiz}) {
+    if (initialQuiz != null) {
+      final games = initialQuiz['games'] as List<dynamic>? ?? [];
+      if (games.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Veuillez ajouter des questions avant de jouer.'),
+              backgroundColor: Colors.orange,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+        return;
+      }
+    }
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -3437,76 +3681,46 @@ Assure-toi que le JSON est strictly valide.
           ),
           const SizedBox(height: 12),
 
-          // Carte de choix de la source d'image (IA vs Pixabay)
+          // Carte d'information sur la gestion intelligente des images
           StyledCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Source des images d\'illustration :',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                Row(
+                  children: [
+                    Icon(
+                      _isVip ? Icons.auto_awesome : Icons.image_search,
+                      color: _isVip ? AppColors.quizPurple : AppColors.primaryBlue,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      _isVip ? 'Génération d\'images hybride (VIP)' : 'Images libres de droits (Standard)',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 8),
-                RadioListTile<String>(
-                  title: Row(
+                Text(
+                  _isVip
+                      ? '🤖 L\'IA choisit automatiquement Openverse pour les images simples et l\'IA FLUX pour les scènes complexes (Max 50 images IA/jour).'
+                      : '🔍 Recherche automatique d\'images gratuites via Openverse (Max 300 recherches/jour).',
+                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                ),
+                if (!_isVip) ...[
+                  const SizedBox(height: 6),
+                  Row(
                     children: [
-                      const Icon(Icons.search, color: Colors.blue),
-                      const SizedBox(width: 8),
-                      Expanded(
+                      const Icon(Icons.lock_rounded, color: AppColors.goldLock, size: 14),
+                      const SizedBox(width: 4),
+                      const Expanded(
                         child: Text(
-                          _isVip
-                              ? 'Pixabay (Banque d\'images - Illimité VIP)'
-                              : 'Pixabay (Banque d\'images - ${_dailyPixabayCount}/300 par jour)',
-                          style: const TextStyle(fontSize: 13),
+                          'Passez VIP pour débloquer la génération d\'images sur-mesure par IA !',
+                          style: TextStyle(fontSize: 11, color: AppColors.goldLock, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ],
                   ),
-                  value: 'pixabay',
-                  groupValue: _imageSource,
-                  onChanged: (val) => setState(() => _imageSource = val!),
-                ),
-                RadioListTile<String>(
-                  title: Row(
-                    children: [
-                      const Icon(
-                        Icons.auto_awesome,
-                        color: AppColors.quizPurple,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          'IA Générative FLUX (50/jour VIP)',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.bold,
-                            color: _isVip ? AppColors.quizPurple : Colors.grey,
-                          ),
-                        ),
-                      ),
-                      if (!_isVip)
-                        const Icon(
-                          Icons.lock_rounded,
-                          color: AppColors.goldLock,
-                          size: 18,
-                        ),
-                    ],
-                  ),
-                  value: 'ai',
-                  groupValue: _imageSource,
-                  onChanged:
-                      _isVip
-                          ? (val) => setState(() => _imageSource = val!)
-                          : null, // Grisé / Désactivé pour les non-VIP
-                ),
-                if (!_isVip)
-                  const Padding(
-                    padding: EdgeInsets.only(left: 16, bottom: 8),
-                    child: Text(
-                      '🔒 La génération d\'images par IA est réservée aux abonnés VIP (Max 50/jour).',
-                      style: TextStyle(fontSize: 11, color: AppColors.goldLock),
-                    ),
-                  ),
+                ],
               ],
             ),
           ),
@@ -4715,13 +4929,90 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
   // Fonction appelée quand on clique sur le bouton "Uploader"
   Future<void> _pickAndUploadImage(TextEditingController controller) async {
-    // âš ï¸  TODO: Implémenter image_picker + Firebase Storage ici.
+    try {
+      // 1. Ouvrir la galerie pour choisir une image
+      final ImagePicker picker = ImagePicker();
+      final XFile? image = await picker.pickImage(
+        source: ImageSource.gallery,
+        imageQuality: 70, // Réduire légèrement la qualité pour alléger l'upload
+      );
 
-    // Pour l'instant on simule l'upload pour que tu voies le résultat visuel
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text("Bouton d'upload cliqué ! (Simulation)")),
-    );
-    setState(() => controller.text = "https://picsum.photos/200");
+      if (image == null) return; // L'utilisateur a annulé
+
+      // 2. Afficher un indicateur de chargement
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    color: Colors.white,
+                    strokeWidth: 2,
+                  ),
+                ),
+                SizedBox(width: 16),
+                Text("Upload de l'image en cours..."),
+              ],
+            ),
+            duration: Duration(minutes: 1), // Reste affiché pendant l'upload
+          ),
+        );
+      }
+
+      // 3. Lire les données de l'image (readAsBytes fonctionne sur Mobile ET sur Web)
+      final Uint8List imageData = await image.readAsBytes();
+
+      // 4. Préparer le chemin dans Firebase Storage
+      final user = FirebaseAuth.instance.currentUser;
+      final String timestamp =
+          DateTime.now().millisecondsSinceEpoch.toString();
+      final String fileName = '${timestamp}_${image.name}';
+
+      final Reference storageRef = FirebaseStorage.instance
+          .ref()
+          .child('quiz_images')
+          .child(user?.uid ?? 'anonymous')
+          .child(fileName);
+
+      // 5. Lancer l'upload
+      final UploadTask uploadTask = storageRef.putData(
+        imageData,
+        SettableMetadata(contentType: 'image/jpeg'), // Forcer le type MIME
+      );
+
+      final TaskSnapshot snapshot = await uploadTask;
+
+      // 6. Récupérer l'URL publique
+      final String downloadUrl = await snapshot.ref.getDownloadURL();
+
+      // 7. Mettre à jour l'interface
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar(); // Cacher le chargement
+        setState(() {
+          controller.text = downloadUrl; // Assigne l'URL au champ texte
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Image uploadée avec succès !"),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      print("Erreur d'upload : $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Erreur lors de l'upload : $e"),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
   }
 
   Map<String, dynamic>? _buildGameData() {
@@ -5927,6 +6218,9 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
           'theme': 'Général',
         });
         _loadQuizzes();
+        if (_currentUser?.uid != null) {
+          AppBadges.checkCreationBadges(context, _currentUser!.uid);
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -6734,6 +7028,8 @@ class _MyIQPageState extends State<MyIQPage> {
       "Jouez à plus de quiz pour une analyse plus approfondie !";
   List<Map<String, dynamic>> _gameHistory = [];
 
+  List<String> _myBadges = [];
+
   @override
   void initState() {
     super.initState();
@@ -6753,8 +7049,10 @@ class _MyIQPageState extends State<MyIQPage> {
               .get();
       if (userDoc.exists) {
         _iq = (userDoc.data()?['iq'] as num? ?? 100.0).toDouble();
+        _myBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
       } else {
         _iq = 100.0;
+        _myBadges = [];
       }
 
       final statsDoc =
@@ -6944,6 +7242,26 @@ class _MyIQPageState extends State<MyIQPage> {
                         ),
                       ),
                     ),
+                    // --- AJOUT DE LA SECTION BADGES ---
+                    const SizedBox(height: 24),
+                    Card(
+                      elevation: 4,
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Mes Badges Débloqués',
+                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 16),
+                            AppBadges.buildBadgeGrid(_myBadges),
+                          ],
+                        ),
+                      ),
+                    ),
+                    // -----------------------------------
                     const SizedBox(height: 24),
                     Card(
                       elevation: 4,
@@ -7648,6 +7966,9 @@ class UserProfilePage extends StatelessWidget {
           final score = userData['score'] ?? 0;
           final iq = (userData['iq'] as num? ?? 100.0).toDouble();
 
+          // --- AJOUT BADGES ---
+          final userBadges = List<String>.from(userData['badges'] ?? []);
+
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16.0),
             child: Column(
@@ -7706,6 +8027,15 @@ class UserProfilePage extends StatelessWidget {
                     ),
                   ),
                 ),
+                // --- AJOUT DE LA SECTION BADGES SUR LE PROFIL ---
+                const SizedBox(height: 24),
+                const Text(
+                  'Badges du Joueur',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const Divider(),
+                AppBadges.buildBadgeGrid(userBadges),
+                // ------------------------------------------------
                 const SizedBox(height: 24),
                 const Text(
                   'Quiz Publics Créés',
@@ -10298,7 +10628,36 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
   @override
   Widget build(BuildContext context) {
-    if (_games.isEmpty || _settings == null || _gameState.isEmpty) {
+    if (_games.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Quiz vide')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.info_outline_rounded, size: 64, color: Colors.orange),
+                const SizedBox(height: 16),
+                const Text(
+                  'Veuillez ajouter des questions avant de jouer.',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Retour'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (_settings == null || _gameState.isEmpty) {
       return const Scaffold(
         body: Center(
           child: Column(
@@ -11751,6 +12110,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   }
 
   void _initializeGame() {
+    if (widget.games.isEmpty) return;
     setState(() {
       _feedback = '';
       _answered = false;
@@ -12601,6 +12961,34 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.games.isEmpty) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Quiz vide')),
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Icon(Icons.info_outline_rounded, size: 64, color: Colors.orange),
+                const SizedBox(height: 16),
+                const Text(
+                  'Veuillez ajouter des questions avant de jouer.',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                ElevatedButton.icon(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.arrow_back),
+                  label: const Text('Retour'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
     final game = widget.games[_currentGameIndex];
     final gameType = game['type']?.toString() ?? 'Inconnu';
     final progress = (_currentGameIndex + 1) / max(1, widget.games.length);
