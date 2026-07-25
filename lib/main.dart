@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -125,55 +125,210 @@ class AppRadii {
 
 class AppBadges {
   static final List<Map<String, dynamic>> allBadges = [
-    {'id': 'first_game', 'name': 'Débutant', 'desc': 'Jouer votre première partie.', 'icon': '🎮', 'color': Colors.blue},
-    {'id': 'amateur', 'name': 'Amateur', 'desc': 'Jouer 10 parties.', 'icon': '🎲', 'color': Colors.lightBlue},
-    {'id': 'veteran', 'name': 'Vétéran', 'desc': 'Jouer 50 parties.', 'icon': '⚔️', 'color': Colors.purple},
-    {'id': 'expert', 'name': 'Expert', 'desc': 'Jouer 100 parties.', 'icon': '🏅', 'color': Colors.orange},
-    {'id': 'first_win', 'name': 'Première Victoire', 'desc': 'Gagner en ligne.', 'icon': '🏆', 'color': Colors.amber},
-    {'id': 'champion', 'name': 'Champion', 'desc': 'Gagner 10 parties en ligne.', 'icon': '👑', 'color': Colors.amberAccent},
-    {'id': 'legend', 'name': 'Légende', 'desc': 'Gagner 50 parties en ligne.', 'icon': '🌟', 'color': Colors.yellowAccent},
-    {'id': 'iq_110', 'name': 'Esprit Vif', 'desc': 'Atteindre 110 de QI.', 'icon': '💡', 'color': Colors.teal},
-    {'id': 'iq_130', 'name': 'Génie', 'desc': 'Atteindre 130 de QI.', 'icon': '🧠', 'color': Colors.indigo},
-    {'id': 'iq_150', 'name': 'Einstein', 'desc': 'Atteindre 150 de QI.', 'icon': '⚛️', 'color': Colors.deepPurple},
-    {'id': 'score_500', 'name': 'Apprenti', 'desc': 'Atteindre 500 points.', 'icon': '🪙', 'color': Colors.grey},
-    {'id': 'score_2000', 'name': 'Connaisseur', 'desc': 'Atteindre 2000 points.', 'icon': '🥈', 'color': Colors.blueGrey},
-    {'id': 'score_5000', 'name': 'Maître', 'desc': 'Atteindre 5000 points.', 'icon': '🥇', 'color': Colors.amber},
-    {'id': 'perfect_score', 'name': 'Perfection', 'desc': '100% de réussite.', 'icon': '🎯', 'color': Colors.redAccent},
-    {'id': 'history_buff', 'name': 'Historien', 'desc': 'Bon score en Histoire.', 'icon': '🏛️', 'color': Colors.brown},
-    {'id': 'science_buff', 'name': 'Scientifique', 'desc': 'Bon score en Sciences.', 'icon': '🔬', 'color': Colors.cyan},
-    {'id': 'geo_buff', 'name': 'Explorateur', 'desc': 'Bon score en Géographie.', 'icon': '🌍', 'color': Colors.green},
-    {'id': 'art_buff', 'name': 'Artiste', 'desc': 'Bon score en Art.', 'icon': '🎨', 'color': Colors.pink},
-    {'id': 'cinema_buff', 'name': 'Cinéphile', 'desc': 'Bon score en Cinéma.', 'icon': '🎬', 'color': Colors.black87},
-    {'id': 'sport_buff', 'name': 'Athlète', 'desc': 'Bon score en Sport.', 'icon': '⚽', 'color': Colors.deepOrange},
-    {'id': 'survivor', 'name': 'Survivant', 'desc': 'Finir un long quiz.', 'icon': '🛡️', 'color': Colors.red},
-    {'id': 'fast_learner', 'name': 'Évolution', 'desc': 'Améliorer son QI.', 'icon': '📈', 'color': Colors.lightGreen},
-    {'id': 'creator_5', 'name': 'Créateur Novice', 'desc': 'Créer 5 quiz.', 'icon': '📝', 'color': Colors.indigoAccent},
-    {'id': 'creator_10', 'name': 'Créateur Confirmé', 'desc': 'Créer 10 quiz.', 'icon': '🏗️', 'color': Colors.deepOrangeAccent},
-    {'id': 'creator_50', 'name': 'Maître Créateur', 'desc': 'Créer 50 quiz.', 'icon': '🎨', 'color': Colors.purpleAccent},
+    {
+      'id': 'first_game',
+      'name': 'Débutant',
+      'desc': 'Jouer votre première partie.',
+      'icon': '🎮',
+      'color': Colors.blue,
+    },
+    {
+      'id': 'amateur',
+      'name': 'Amateur',
+      'desc': 'Jouer 10 parties.',
+      'icon': '🎲',
+      'color': Colors.lightBlue,
+    },
+    {
+      'id': 'veteran',
+      'name': 'Vétéran',
+      'desc': 'Jouer 50 parties.',
+      'icon': '⚔️',
+      'color': Colors.purple,
+    },
+    {
+      'id': 'expert',
+      'name': 'Expert',
+      'desc': 'Jouer 100 parties.',
+      'icon': '🏅',
+      'color': Colors.orange,
+    },
+    {
+      'id': 'first_win',
+      'name': 'Première Victoire',
+      'desc': 'Gagner en ligne.',
+      'icon': '🏆',
+      'color': Colors.amber,
+    },
+    {
+      'id': 'champion',
+      'name': 'Champion',
+      'desc': 'Gagner 10 parties en ligne.',
+      'icon': '👑',
+      'color': Colors.amberAccent,
+    },
+    {
+      'id': 'legend',
+      'name': 'Légende',
+      'desc': 'Gagner 50 parties en ligne.',
+      'icon': '🌟',
+      'color': Colors.yellowAccent,
+    },
+    {
+      'id': 'iq_110',
+      'name': 'Esprit Vif',
+      'desc': 'Atteindre 110 de QI.',
+      'icon': '💡',
+      'color': Colors.teal,
+    },
+    {
+      'id': 'iq_130',
+      'name': 'Génie',
+      'desc': 'Atteindre 130 de QI.',
+      'icon': '🧠',
+      'color': Colors.indigo,
+    },
+    {
+      'id': 'iq_150',
+      'name': 'Einstein',
+      'desc': 'Atteindre 150 de QI.',
+      'icon': '⚛️',
+      'color': Colors.deepPurple,
+    },
+    {
+      'id': 'score_500',
+      'name': 'Apprenti',
+      'desc': 'Atteindre 500 points.',
+      'icon': '🪙',
+      'color': Colors.grey,
+    },
+    {
+      'id': 'score_2000',
+      'name': 'Connaisseur',
+      'desc': 'Atteindre 2000 points.',
+      'icon': '🥈',
+      'color': Colors.blueGrey,
+    },
+    {
+      'id': 'score_5000',
+      'name': 'Maître',
+      'desc': 'Atteindre 5000 points.',
+      'icon': '🥇',
+      'color': Colors.amber,
+    },
+    {
+      'id': 'perfect_score',
+      'name': 'Perfection',
+      'desc': '100% de réussite.',
+      'icon': '🎯',
+      'color': Colors.redAccent,
+    },
+    {
+      'id': 'history_buff',
+      'name': 'Historien',
+      'desc': 'Bon score en Histoire.',
+      'icon': '🏛️',
+      'color': Colors.brown,
+    },
+    {
+      'id': 'science_buff',
+      'name': 'Scientifique',
+      'desc': 'Bon score en Sciences.',
+      'icon': '🔬',
+      'color': Colors.cyan,
+    },
+    {
+      'id': 'geo_buff',
+      'name': 'Explorateur',
+      'desc': 'Bon score en Géographie.',
+      'icon': '🌍',
+      'color': Colors.green,
+    },
+    {
+      'id': 'art_buff',
+      'name': 'Artiste',
+      'desc': 'Bon score en Art.',
+      'icon': '🎨',
+      'color': Colors.pink,
+    },
+    {
+      'id': 'cinema_buff',
+      'name': 'Cinéphile',
+      'desc': 'Bon score en Cinéma.',
+      'icon': '🎬',
+      'color': Colors.black87,
+    },
+    {
+      'id': 'sport_buff',
+      'name': 'Athlète',
+      'desc': 'Bon score en Sport.',
+      'icon': '⚽',
+      'color': Colors.deepOrange,
+    },
+    {
+      'id': 'survivor',
+      'name': 'Survivant',
+      'desc': 'Finir un long quiz.',
+      'icon': '🛡️',
+      'color': Colors.red,
+    },
+    {
+      'id': 'fast_learner',
+      'name': 'Évolution',
+      'desc': 'Améliorer son QI.',
+      'icon': '📈',
+      'color': Colors.lightGreen,
+    },
+    {
+      'id': 'creator_5',
+      'name': 'Créateur Novice',
+      'desc': 'Créer 5 quiz.',
+      'icon': '📝',
+      'color': Colors.indigoAccent,
+    },
+    {
+      'id': 'creator_10',
+      'name': 'Créateur Confirmé',
+      'desc': 'Créer 10 quiz.',
+      'icon': '🏗️',
+      'color': Colors.deepOrangeAccent,
+    },
+    {
+      'id': 'creator_50',
+      'name': 'Maître Créateur',
+      'desc': 'Créer 50 quiz.',
+      'icon': '🎨',
+      'color': Colors.purpleAccent,
+    },
   ];
 
-  static Future<void> checkCreationBadges(BuildContext context, String uid) async {
+  static Future<void> checkCreationBadges(
+    BuildContext context,
+    String uid,
+  ) async {
     try {
       final userRef = FirebaseFirestore.instance.collection('users').doc(uid);
       final userDoc = await userRef.get();
       if (!userDoc.exists) return;
 
       final currentBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
-      final quizzesSnap = await FirebaseFirestore.instance
-          .collection('quizzes')
-          .where('userId', isEqualTo: uid)
-          .get();
+      final quizzesSnap =
+          await FirebaseFirestore.instance
+              .collection('quizzes')
+              .where('userId', isEqualTo: uid)
+              .get();
       final count = quizzesSnap.docs.length;
 
       List<String> newBadges = [];
-      if (count >= 5 && !currentBadges.contains('creator_5')) newBadges.add('creator_5');
-      if (count >= 10 && !currentBadges.contains('creator_10')) newBadges.add('creator_10');
-      if (count >= 50 && !currentBadges.contains('creator_50')) newBadges.add('creator_50');
+      if (count >= 5 && !currentBadges.contains('creator_5'))
+        newBadges.add('creator_5');
+      if (count >= 10 && !currentBadges.contains('creator_10'))
+        newBadges.add('creator_10');
+      if (count >= 50 && !currentBadges.contains('creator_50'))
+        newBadges.add('creator_50');
 
       if (newBadges.isNotEmpty) {
-        await userRef.update({
-          'badges': FieldValue.arrayUnion(newBadges),
-        });
+        await userRef.update({'badges': FieldValue.arrayUnion(newBadges)});
         if (context.mounted) {
           showNewBadges(context, newBadges);
         }
@@ -185,7 +340,10 @@ class AppBadges {
 
   static void showNewBadges(BuildContext context, List<dynamic> newBadgeIds) {
     for (String id in newBadgeIds.cast<String>()) {
-      final badge = allBadges.firstWhere((b) => b['id'] == id, orElse: () => {});
+      final badge = allBadges.firstWhere(
+        (b) => b['id'] == id,
+        orElse: () => {},
+      );
       if (badge.isNotEmpty) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -198,8 +356,22 @@ class AppBadges {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Text('NOUVEAU BADGE DÉBLOQUÉ !', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.white70)),
-                      Text(badge['name'], style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.white)),
+                      const Text(
+                        'NOUVEAU BADGE DÉBLOQUÉ !',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white70,
+                        ),
+                      ),
+                      Text(
+                        badge['name'],
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Colors.white,
+                        ),
+                      ),
                     ],
                   ),
                 ),
@@ -208,7 +380,9 @@ class AppBadges {
             backgroundColor: badge['color'],
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 5),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
           ),
         );
       }
@@ -237,7 +411,10 @@ class AppBadges {
             opacity: isEarned ? 1.0 : 0.3,
             child: Card(
               elevation: isEarned ? 4 : 0,
-              color: isEarned ? badgeColor.withValues(alpha: 0.15) : Colors.grey.shade200,
+              color:
+                  isEarned
+                      ? badgeColor.withValues(alpha: 0.15)
+                      : Colors.grey.shade200,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
                 side: BorderSide(
@@ -255,7 +432,8 @@ class AppBadges {
                     textAlign: TextAlign.center,
                     style: TextStyle(
                       fontSize: 11,
-                      fontWeight: isEarned ? FontWeight.bold : FontWeight.normal,
+                      fontWeight:
+                          isEarned ? FontWeight.bold : FontWeight.normal,
                       color: isEarned ? badgeColor : Colors.grey.shade700,
                     ),
                   ),
@@ -1822,10 +2000,12 @@ class _HomePageState extends State<HomePage> {
           questionStructure = '"text": "..."';
           break;
         case DisplayMode.image:
-          questionStructure = '"image_description": "...", "image_source": "openverse|ai"';
+          questionStructure =
+              '"image_description": "...", "image_source": "openverse|ai"';
           break;
         case DisplayMode.textAndImage:
-          questionStructure = '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
+          questionStructure =
+              '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
           break;
       }
       String optionStructure;
@@ -1834,10 +2014,12 @@ class _HomePageState extends State<HomePage> {
           optionStructure = '"text": "..."';
           break;
         case DisplayMode.image:
-          optionStructure = '"image_description": "...", "image_source": "openverse|ai"';
+          optionStructure =
+              '"image_description": "...", "image_source": "openverse|ai"';
           break;
         case DisplayMode.textAndImage:
-          optionStructure = '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
+          optionStructure =
+              '"text": "...", "image_description": "...", "image_source": "openverse|ai"';
           break;
       }
       qcmInstruction =
@@ -2367,9 +2549,10 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     String key,
   ) async {
     String description = item[key]?.toString().trim() ?? '';
-    String source = item['image_source']?.toString().toLowerCase() ?? 'openverse';
+    String source =
+        item['image_source']?.toString().toLowerCase() ?? 'openverse';
     bool fromTextFallback = false;
-    
+
     // Si l'IA n'a pas fourni de description d'image, on se rabat sur le texte
     if (description.isEmpty && item['text'] != null) {
       description = item['text'].toString().trim();
@@ -2379,19 +2562,50 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
     // --- NETTOYAGE POUR LA RECHERCHE OPENVERSE ---
     String searchQuery = description;
-    
-    if ((source == 'openverse' || source == 'pixabay') && (fromTextFallback || description.split(RegExp(r'\s+')).length > 3)) {
+
+    if ((source == 'openverse' || source == 'pixabay') &&
+        (fromTextFallback || description.split(RegExp(r'\s+')).length > 3)) {
       String cleanQuery = description.replaceAll(RegExp(r'[^\w\sÀ-ÿ]'), ' ');
       List<String> stopWords = [
-        'le', 'la', 'les', 'l', 'd', 'de', 'du', 'des', 'un', 'une', 'qui', 'que', 'est', 'sont', 
-        'dans', 'avec', 'et', 'ou', 'ce', 'cette', 'ces', 'mon', 'the', 'is', 'are', 'in', 'on', 'of', 'and'
+        'le',
+        'la',
+        'les',
+        'l',
+        'd',
+        'de',
+        'du',
+        'des',
+        'un',
+        'une',
+        'qui',
+        'que',
+        'est',
+        'sont',
+        'dans',
+        'avec',
+        'et',
+        'ou',
+        'ce',
+        'cette',
+        'ces',
+        'mon',
+        'the',
+        'is',
+        'are',
+        'in',
+        'on',
+        'of',
+        'and',
       ];
-      
-      List<String> words = cleanQuery
-          .split(RegExp(r'\s+'))
-          .where((w) => w.length > 2 && !stopWords.contains(w.toLowerCase()))
-          .toList();
-      
+
+      List<String> words =
+          cleanQuery
+              .split(RegExp(r'\s+'))
+              .where(
+                (w) => w.length > 2 && !stopWords.contains(w.toLowerCase()),
+              )
+              .toList();
+
       if (words.length > 3) {
         words.sort((a, b) => b.length.compareTo(a.length));
         words = words.take(3).toList();
@@ -2404,8 +2618,11 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     try {
       if (_isVip) {
         if (requiresAI) {
-          if (mounted) setState(() => _status = 'Génération IA pour "$description"...');
-          final callableAI = FirebaseFunctions.instance.httpsCallable('generateAIImage');
+          if (mounted)
+            setState(() => _status = 'Génération IA pour "$description"...');
+          final callableAI = FirebaseFunctions.instance.httpsCallable(
+            'generateAIImage',
+          );
           final resultAI = await callableAI.call({'prompt': description});
           if (resultAI.data != null && resultAI.data['url'] != null) {
             item['image_url'] = resultAI.data['url'];
@@ -2414,9 +2631,16 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         }
 
         // CONCEPT SIMPLE -> Openverse
-        if (mounted) setState(() => _status = 'Recherche Openverse pour "$searchQuery"...');
-        final callableOpenverse = FirebaseFunctions.instance.httpsCallable('fetchOpenverseImage');
-        final resultOpenverse = await callableOpenverse.call({'query': searchQuery});
+        if (mounted)
+          setState(
+            () => _status = 'Recherche Openverse pour "$searchQuery"...',
+          );
+        final callableOpenverse = FirebaseFunctions.instance.httpsCallable(
+          'fetchOpenverseImage',
+        );
+        final resultOpenverse = await callableOpenverse.call({
+          'query': searchQuery,
+        });
 
         if (resultOpenverse.data != null &&
             resultOpenverse.data['results'] != null &&
@@ -2424,8 +2648,15 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           item['image_url'] = resultOpenverse.data['results'][0]['url'];
         } else if (!requiresAI) {
           // Fallback IA si Openverse ne trouve rien
-          if (mounted) setState(() => _status = 'Aucun résultat. Bascule sur l\'IA pour "$description"...');
-          final callableAI = FirebaseFunctions.instance.httpsCallable('generateAIImage');
+          if (mounted)
+            setState(
+              () =>
+                  _status =
+                      'Aucun résultat. Bascule sur l\'IA pour "$description"...',
+            );
+          final callableAI = FirebaseFunctions.instance.httpsCallable(
+            'generateAIImage',
+          );
           final resultAI = await callableAI.call({'prompt': description});
           if (resultAI.data != null && resultAI.data['url'] != null) {
             item['image_url'] = resultAI.data['url'];
@@ -2433,8 +2664,13 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         }
       } else {
         // NON-VIP : Banque d'images Openverse uniquement
-        if (mounted) setState(() => _status = 'Recherche Openverse pour "$searchQuery"...');
-        final callable = FirebaseFunctions.instance.httpsCallable('fetchOpenverseImage');
+        if (mounted)
+          setState(
+            () => _status = 'Recherche Openverse pour "$searchQuery"...',
+          );
+        final callable = FirebaseFunctions.instance.httpsCallable(
+          'fetchOpenverseImage',
+        );
         final result = await callable.call({'query': searchQuery});
         if (result.data != null &&
             result.data['results'] != null &&
@@ -3690,12 +3926,18 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                   children: [
                     Icon(
                       _isVip ? Icons.auto_awesome : Icons.image_search,
-                      color: _isVip ? AppColors.quizPurple : AppColors.primaryBlue,
+                      color:
+                          _isVip ? AppColors.quizPurple : AppColors.primaryBlue,
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      _isVip ? 'Génération d\'images hybride (VIP)' : 'Images libres de droits (Standard)',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      _isVip
+                          ? 'Génération d\'images hybride (VIP)'
+                          : 'Images libres de droits (Standard)',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
                     ),
                   ],
                 ),
@@ -3704,18 +3946,29 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                   _isVip
                       ? '🤖 L\'IA choisit automatiquement Openverse pour les images simples et l\'IA FLUX pour les scènes complexes (Max 50 images IA/jour).'
                       : '🔍 Recherche automatique d\'images gratuites via Openverse (Max 300 recherches/jour).',
-                  style: const TextStyle(fontSize: 12, color: AppColors.textSecondary),
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.textSecondary,
+                  ),
                 ),
                 if (!_isVip) ...[
                   const SizedBox(height: 6),
                   Row(
                     children: [
-                      const Icon(Icons.lock_rounded, color: AppColors.goldLock, size: 14),
+                      const Icon(
+                        Icons.lock_rounded,
+                        color: AppColors.goldLock,
+                        size: 14,
+                      ),
                       const SizedBox(width: 4),
                       const Expanded(
                         child: Text(
                           'Passez VIP pour débloquer la génération d\'images sur-mesure par IA !',
-                          style: TextStyle(fontSize: 11, color: AppColors.goldLock, fontWeight: FontWeight.bold),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: AppColors.goldLock,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                     ],
@@ -4967,8 +5220,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
       // 4. Préparer le chemin dans Firebase Storage
       final user = FirebaseAuth.instance.currentUser;
-      final String timestamp =
-          DateTime.now().millisecondsSinceEpoch.toString();
+      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
       final String fileName = '${timestamp}_${image.name}';
 
       final Reference storageRef = FirebaseStorage.instance
@@ -4990,7 +5242,9 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
 
       // 7. Mettre à jour l'interface
       if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar(); // Cacher le chargement
+        ScaffoldMessenger.of(
+          context,
+        ).hideCurrentSnackBar(); // Cacher le chargement
         setState(() {
           controller.text = downloadUrl; // Assigne l'URL au champ texte
         });
@@ -7253,7 +7507,10 @@ class _MyIQPageState extends State<MyIQPage> {
                           children: [
                             const Text(
                               'Mes Badges Débloqués',
-                              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
                             const SizedBox(height: 16),
                             AppBadges.buildBadgeGrid(_myBadges),
@@ -10637,7 +10894,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.info_outline_rounded, size: 64, color: Colors.orange),
+                const Icon(
+                  Icons.info_outline_rounded,
+                  size: 64,
+                  color: Colors.orange,
+                ),
                 const SizedBox(height: 16),
                 const Text(
                   'Veuillez ajouter des questions avant de jouer.',
@@ -12970,7 +13231,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.info_outline_rounded, size: 64, color: Colors.orange),
+                const Icon(
+                  Icons.info_outline_rounded,
+                  size: 64,
+                  color: Colors.orange,
+                ),
                 const SizedBox(height: 16),
                 const Text(
                   'Veuillez ajouter des questions avant de jouer.',
