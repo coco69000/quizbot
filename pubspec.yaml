@@ -24,6 +24,7 @@ dependencies:
   fl_chart: ^0.69.2
   cached_network_image: ^3.4.1
   shared_preferences: ^2.3.0
+  firebase_messaging: ^16.4.3
   cupertino_icons: ^1.0.8
   html: ^0.15.0
 

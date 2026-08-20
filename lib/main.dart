@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -19,7 +19,47 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:typed_data';
+
+// Gestionnaire des notifications reçues quand l'application est fermée ou en arrière-plan
+@pragma('vm:entry-point')
+Future<void> _firebaseMessagingBackgroundHandler(RemoteMessage message) async {
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  print("Notification reçue en arrière-plan : ${message.notification?.title}");
+}
+
+Future<void> setupFCMToken() async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null || user.isAnonymous) return;
+
+  try {
+    String? token = await FirebaseMessaging.instance.getToken();
+    if (token != null) {
+      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'fcmTokens': FieldValue.arrayUnion([token]),
+      }, SetOptions(merge: true));
+      print("Token FCM enregistré : $token");
+    }
+
+    // Écoute si le token change
+    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
+      FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+        'fcmTokens': FieldValue.arrayUnion([newToken]),
+      }, SetOptions(merge: true));
+    });
+
+    // Écoute des notifications en avant-plan (application ouverte)
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      final notification = message.notification;
+      if (notification != null) {
+        print("Notification reçue en direct : ${notification.title}");
+      }
+    });
+  } catch (e) {
+    print("Erreur configuration FCM : $e");
+  }
+}
 
 // --- CLASSE POUR LE FEEDBACK DU JEU "MOT MYSTÈRE" ---
 // Représente le statut de chaque lettre d'une tentative.
@@ -34,10 +74,17 @@ class LetterFeedback {
 
 Future<Map<String, dynamic>> callSecureAI({
   String? model,
-  required String systemMessage,
+  String systemMessage = '',
   required String prompt,
   double temperature = 0.3,
   bool imageRequested = false,
+  bool aiDecide = false,
+  bool aiCustomTimers = false,
+  String qcmQuestionMode = 'text',
+  String qcmAnswerMode = 'textAndImage',
+  String matchDisplayMode = 'definitionToWord',
+  String memoryDisplayMode = 'wordToDefinition',
+  List<String> selectedGames = const [],
 }) async {
   try {
     final user = FirebaseAuth.instance.currentUser;
@@ -47,10 +94,16 @@ Future<Map<String, dynamic>> callSecureAI({
 
     final callable = FirebaseFunctions.instance.httpsCallable('generateQuiz');
     final result = await callable.call({
-      'systemMessage': systemMessage,
       'prompt': prompt,
       'temperature': temperature,
       'imageRequested': imageRequested,
+      'aiDecide': aiDecide,
+      'aiCustomTimers': aiCustomTimers,
+      'qcmQuestionMode': qcmQuestionMode,
+      'qcmAnswerMode': qcmAnswerMode,
+      'matchDisplayMode': matchDisplayMode,
+      'memoryDisplayMode': memoryDisplayMode,
+      'selectedGames': selectedGames,
     });
 
     if (result.data == null) {
@@ -73,28 +126,67 @@ Future<Map<String, dynamic>> callSecureAI({
 
 Future<String?> extractThemeFromQuizText(String quizText) async {
   try {
-    final data = await callSecureAI(
-      systemMessage:
-          'Extrais le thème principal du texte. Réponds UNIQUEMENT avec un objet JSON strict au format {"theme": "NomDuTheme"}. Utilise un thème général et court (1-3 mots max, ex: "Histoire", "Sciences", "Animaux"). Ne fais aucune phrase.',
-      prompt: quizText,
-    );
-
-    if (data['choices'] != null && (data['choices'] as List).isNotEmpty) {
-      String content =
-          data['choices'][0]['message']['content']?.toString().trim() ?? '';
-      content = content.replaceAll(RegExp(r'```json\s*|```'), '');
-
-      final jsonMatch = RegExp(r'\{[\s\S]*\}').firstMatch(content);
-      if (jsonMatch != null) {
-        final decoded = jsonDecode(jsonMatch.group(0)!);
-        return decoded['theme']?.toString().trim() ?? 'Général';
-      }
+    final callable = FirebaseFunctions.instance.httpsCallable('extractTheme');
+    final result = await callable.call({'text': quizText});
+    if (result.data != null && result.data is Map) {
+      final theme = result.data['theme']?.toString().trim();
+      if (theme != null && theme.isNotEmpty) return theme;
     }
     return 'Général';
   } catch (e) {
     print('Erreur lors de l\'extraction du thème : $e');
     return 'Général';
   }
+}
+
+bool isValidImageUrl(String url) {
+  final cleanUrl = url.trim();
+  if (cleanUrl.isEmpty) return false;
+
+  final allowedHosts = [
+    'firebasestorage.googleapis.com',
+    'live.staticflickr.com',
+    'images.openverse.org',
+    'wikimedia.org',
+    'pixabay.com',
+    'unsplash.com',
+  ];
+
+  final uri = Uri.tryParse(cleanUrl);
+  if (uri == null || !uri.hasScheme || uri.scheme != 'https') return false;
+
+  final isAllowedHost = allowedHosts.any(
+    (host) => uri.host.toLowerCase().endsWith(host),
+  );
+  if (!isAllowedHost) return false;
+
+  // Vérifie l'extension ou le format Firebase Storage
+  final isImageFormat =
+      cleanUrl.contains('/o/') ||
+      RegExp(
+        r'\.(jpeg|jpg|png|webp|gif)(\?.*)?$',
+        caseSensitive: false,
+      ).hasMatch(cleanUrl);
+
+  return isImageFormat;
+}
+
+String _encodeWordSecret(String word) {
+  if (word.isEmpty) return '';
+  return 'SEC_' + base64Encode(utf8.encode(word.toUpperCase()));
+}
+
+String _decodeWordSecret(String? secret) {
+  if (secret == null || secret.isEmpty) return '';
+  if (secret.startsWith('SEC_')) {
+    try {
+      final raw = secret.substring(4);
+      return utf8.decode(base64Decode(raw));
+    } catch (_) {
+      return secret;
+    }
+  }
+  return secret;
 }
 
 class AppColors {
@@ -328,7 +420,11 @@ class AppBadges {
         newBadges.add('creator_50');
 
       if (newBadges.isNotEmpty) {
-        await userRef.update({'badges': FieldValue.arrayUnion(newBadges)});
+        // --- CORRECTION : Sauvegarder impérativement dans Firestore ---
+        await userRef.update({
+          'badges': FieldValue.arrayUnion(newBadges),
+        });
+
         if (context.mounted) {
           showNewBadges(context, newBadges);
         }
@@ -584,7 +680,7 @@ class HangmanPainter extends CustomPainter {
       oldDelegate.mistakes != mistakes;
 }
 
-class GameResultsPage extends StatelessWidget {
+class GameResultsPage extends StatefulWidget {
   final Map<String, int> playerScores;
   final bool isHost;
   final String roomId;
@@ -602,9 +698,35 @@ class GameResultsPage extends StatelessWidget {
     this.gamesPlayed,
   });
 
+  @override
+  State<GameResultsPage> createState() => _GameResultsPageState();
+}
+
+class _GameResultsPageState extends State<GameResultsPage> {
+  bool _submitted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _submitOnce();
+  }
+
+  void _submitOnce() {
+    if (!_submitted) {
+      _submitted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          _updateGlobalScoreAndHistory(context);
+        }
+      });
+    }
+  }
+
   Future<void> _updateGlobalScoreAndHistory(BuildContext context) async {
     final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null || playerName == null || playerScores.isEmpty)
+    if (currentUser == null ||
+        widget.playerName == null ||
+        widget.playerScores.isEmpty)
       return;
 
     String? quizId;
@@ -613,7 +735,7 @@ class GameResultsPage extends StatelessWidget {
       roomDoc =
           await FirebaseFirestore.instance
               .collection('onlineRooms')
-              .doc(roomId)
+              .doc(widget.roomId)
               .get();
       if (roomDoc.exists) {
         quizId = roomDoc.data()?['quizId'];
@@ -623,10 +745,10 @@ class GameResultsPage extends StatelessWidget {
     }
 
     double averageDifficulty = 5.0;
-    if (gamesPlayed != null && gamesPlayed!.isNotEmpty) {
+    if (widget.gamesPlayed != null && widget.gamesPlayed!.isNotEmpty) {
       double totalDifficulty = 0;
       int gamesWithDifficulty = 0;
-      for (var game in gamesPlayed!) {
+      for (var game in widget.gamesPlayed!) {
         if (game.containsKey('difficulty')) {
           totalDifficulty += (game['difficulty'] as num?) ?? 5;
           gamesWithDifficulty++;
@@ -640,8 +762,8 @@ class GameResultsPage extends StatelessWidget {
     String theme = "Inconnu";
     if (roomDoc != null && roomDoc.exists && roomDoc.data()?['theme'] != null) {
       theme = roomDoc.data()!['theme'];
-    } else if (quizText != null) {
-      theme = await extractThemeFromQuizText(quizText!) ?? "Inconnu";
+    } else if (widget.quizText != null) {
+      theme = await extractThemeFromQuizText(widget.quizText!) ?? "Inconnu";
     }
 
     try {
@@ -650,12 +772,13 @@ class GameResultsPage extends StatelessWidget {
       );
       final result = await callable.call({
         'gameType': 'online',
+        'roomId': widget.roomId,
         'quizId': quizId,
-        'gamesPlayed': gamesPlayed,
-        'playerScores': playerScores,
-        'playerName': playerName,
+        'gamesPlayed': widget.gamesPlayed,
+        'playerScores': widget.playerScores,
+        'playerName': widget.playerName,
         'averageDifficulty': averageDifficulty,
-        'quizText': quizText,
+        'quizText': widget.quizText,
         'theme': theme,
       });
 
@@ -704,10 +827,10 @@ class GameResultsPage extends StatelessWidget {
     final top = sortedPlayers.take(3).toList();
     if (top.isEmpty) return const SizedBox.shrink();
     final podiumOrder = <int>[1, 0, 2].where((i) => i < top.length).toList();
-    final heights = <double>[100, 138, 82];
+    final heights = <double>[138, 100, 82];
     final colors = <Color>[
-      const Color(0xFFC0C0C0),
       AppColors.neonCyan,
+      const Color(0xFFC0C0C0),
       const Color(0xFFCD7F32),
     ];
 
@@ -834,12 +957,8 @@ class GameResultsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    WidgetsBinding.instance.addPostFrameCallback(
-      (_) => _updateGlobalScoreAndHistory(context),
-    );
-
     final sortedPlayers =
-        playerScores.entries.toList()
+        widget.playerScores.entries.toList()
           ..sort((a, b) => b.value.compareTo(a.value));
     final int maxScore =
         sortedPlayers.isNotEmpty ? sortedPlayers.first.value : 0;
@@ -1007,11 +1126,11 @@ class GameResultsPage extends StatelessWidget {
                 width: double.infinity,
                 child: ElevatedButton.icon(
                   onPressed: () async {
-                    if (isHost) {
+                    if (widget.isHost) {
                       try {
                         await FirebaseFirestore.instance
                             .collection('onlineRooms')
-                            .doc(roomId)
+                            .doc(widget.roomId)
                             .delete();
                       } catch (e) {
                         print("Erreur lors de la suppression de la salle: $e");
@@ -1208,6 +1327,18 @@ void main() async {
       options: DefaultFirebaseOptions.currentPlatform,
     );
     print("Firebase initialisé avec succès");
+
+    // --- INITIALISATION DES NOTIFICATIONS PUSH ---
+    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    
+    // Demande de permission (iOS et Android 13+)
+    final messaging = FirebaseMessaging.instance;
+    NotificationSettings settings = await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+    print('Statut de permission notifications : ${settings.authorizationStatus}');
   } catch (e) {
     print("Erreur lors de l'initialisation de Firebase: $e");
   }
@@ -1294,11 +1425,38 @@ class _AuthPageState extends State<AuthPage> {
           password: _passwordController.text.trim(),
         );
       } else {
-        UserCredential userCredential = await FirebaseAuth.instance
-            .createUserWithEmailAndPassword(
-              email: _emailController.text.trim(),
-              password: _passwordController.text.trim(),
-            );
+        final pwd = _passwordController.text;
+        if (pwd.length < 8) {
+          setState(() {
+            _errorMessage =
+                'Le mot de passe doit contenir au moins 8 caractères.';
+            _isLoading = false;
+          });
+          return;
+        }
+        if (!RegExp(r'[0-9]').hasMatch(pwd)) {
+          setState(() {
+            _errorMessage = 'Le mot de passe doit contenir au moins 1 chiffre.';
+            _isLoading = false;
+          });
+          return;
+        }
+
+        final email = _emailController.text.trim();
+        final password = _passwordController.text.trim();
+        final currentUser = FirebaseAuth.instance.currentUser;
+        UserCredential userCredential;
+
+        if (currentUser != null && currentUser.isAnonymous) {
+          final credential = EmailAuthProvider.credential(
+            email: email,
+            password: password,
+          );
+          userCredential = await currentUser.linkWithCredential(credential);
+        } else {
+          userCredential = await FirebaseAuth.instance
+              .createUserWithEmailAndPassword(email: email, password: password);
+        }
         await userCredential.user?.updateDisplayName(
           _usernameController.text.trim(),
         );
@@ -1307,18 +1465,9 @@ class _AuthPageState extends State<AuthPage> {
             .doc(userCredential.user?.uid)
             .set({
               'username': _usernameController.text.trim(),
-              'email': _emailController.text.trim(),
-              'score': 0,
-              'iq': 100,
+              'email': email,
               'country': 'Monde',
-              'isVip': false,
-              'createdAt': FieldValue.serverTimestamp(),
-              'monthlyGenerationsCount': 0,
-              'lastMonthlyReset': FieldValue.serverTimestamp(),
-              'dailyGenerationsCount': 0,
-              'dailyImageGenerationsCount': 0,
-              'lastDailyReset': FieldValue.serverTimestamp(),
-            });
+            }, SetOptions(merge: true));
       }
     } on FirebaseAuthException catch (e) {
       setState(() {
@@ -1609,6 +1758,7 @@ class _HomePageState extends State<HomePage> {
           0; // <--- CORRIGÉ : 0 = la page pour rejoindre en ligne
     }
     _loadUserData();
+    setupFCMToken();
   }
 
   @override
@@ -1706,10 +1856,6 @@ class _HomePageState extends State<HomePage> {
         DateTime.fromMillisecondsSinceEpoch(0);
     if (now.month != lastMonthlyReset.month ||
         now.year != lastMonthlyReset.year) {
-      await userRef.update({
-        'monthlyGenerationsCount': 0,
-        'lastMonthlyReset': FieldValue.serverTimestamp(),
-      });
       if (mounted) setState(() => _monthlyGenerationsCount = 0);
     }
 
@@ -1720,13 +1866,6 @@ class _HomePageState extends State<HomePage> {
     if (now.day != lastDailyReset.day ||
         now.month != lastDailyReset.month ||
         now.year != lastDailyReset.year) {
-      await userRef.update({
-        'dailyGenerationsCount': 0,
-        'dailyImageGenerationsCount': 0,
-        'dailyAiImageCount': 0,
-        'dailyOpenverseCount': 0,
-        'lastDailyReset': FieldValue.serverTimestamp(),
-      });
       if (mounted) {
         setState(() {
           _dailyGenerationsCount = 0;
@@ -2064,19 +2203,14 @@ Génère la NOUVELLE liste complète de manière créative et retourne UNIQUEMEN
       } else {
         if (_aiDecideGames) {
           systemPromptContent += '''
-RÈGLE DE CRÉATIVITÉ ABSOLUE (L'IA DÉCIDE) :
-- Ne sois pas répétitif ! Ne crée pas que des QCM.
-- Fais un mélange amusant et dynamique (ex: 1 Pendu, 2 QCM avec 3 choix, 1 Relier, 1 Intrus, 1 Mot Mystère).
-- Adapte le nombre total de jeux à la longueur du texte (entre 3 et 10 jeux au total).
-- Varie la difficulté.
+RÈGLE DE LIBERTÉ ABSOLUE (L'IA DÉCIDE) :
+- Adapte le nombre total d'épreuves et les types de jeux librement selon la richesse du texte.
+- Pas de nombre fixe : tu décides de tout de manière cohérente et équilibrée.
 ''';
         } else {
           systemPromptContent += '''
-RÈGLE DE QUANTITÉ ET CRÉATIVITÉ :
-- Tu DOIS générer au moins 1 jeu pour CHAQUE type demandé.
-- Varie le nombre de questions générées en fonction de la taille du texte (pas besoin de forcer 5 questions si le texte est court).
-- Pour les QCM, varie le nombre d'options de réponse (entre 2 et 5 options). Ne fais pas toujours 4 options.
-- Pour "Relier" et "Memory" : entre 3 et 8 paires selon le contexte.
+RÈGLE STRICTE :
+- Tu DOIS générer un jeu pour CHAQUE type demandé (${selectedGameNames.length} types demandés = ${selectedGameNames.length} jeux générés au minimum).
 ''';
         }
       }
@@ -2138,6 +2272,13 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         prompt:
             'Voici le texte à transformer en jeux : "$text"\n\nRappel: retourne UNIQUEMENT le tableau JSON, sois créatif sur le format des questions.',
         imageRequested: imageRequested,
+        aiDecide: _aiDecideGames,
+        aiCustomTimers: _aiCustomTimers,
+        qcmQuestionMode: _qcmQuestionMode.name,
+        qcmAnswerMode: _qcmAnswerMode.name,
+        matchDisplayMode: _matchDisplayMode.name,
+        memoryDisplayMode: _memoryDisplayMode.name,
+        selectedGames: selectedGameNames,
       );
 
       if (data.isNotEmpty &&
@@ -2328,6 +2469,20 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
       switch (type) {
         case 'Vrai ou Faux':
+          if (game['answer'] is String) {
+            final strAns = game['answer'].toString().toLowerCase().trim();
+            if (strAns == 'true' ||
+                strAns == 'vrai' ||
+                strAns == 'yes' ||
+                strAns == 'oui') {
+              game['answer'] = true;
+            } else if (strAns == 'false' ||
+                strAns == 'faux' ||
+                strAns == 'no' ||
+                strAns == 'non') {
+              game['answer'] = false;
+            }
+          }
           if (game['question'] == null ||
               game['answer'] == null ||
               game['answer'] is! bool) {
@@ -2361,6 +2516,8 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Pendu':
+        case 'Pendu amélioré':
+          game['type'] = 'Pendu';
           final word = game['word'] as String?;
           if (word == null || word.isEmpty) {
             print("[VALIDATION] -> INVALIDE (Pendu): mot manquant.");
@@ -2368,6 +2525,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Relier':
+          if (game['pairs'] == null && game['items'] != null) {
+            game['pairs'] = game['items'];
+          }
           final pairs = game['pairs'];
           if (pairs == null || (pairs is List && pairs.length < 2)) {
             print(
@@ -2377,7 +2537,10 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Memory':
-          final pairs = game['pairs'] ?? game['items'];
+          if (game['pairs'] == null && game['items'] != null) {
+            game['pairs'] = game['items'];
+          }
+          final pairs = game['pairs'];
           if (pairs == null || (pairs is List && pairs.length < 2)) {
             print("[VALIDATION] -> INVALIDE (Memory): paires/items manquants.");
             isGameValid = false;
@@ -2392,6 +2555,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Deux Vérités, un Mensonge':
+          if (game['lie'] == null) {
+            game['lie'] = game['mensonge'] ?? game['fake'];
+          }
           final statements = game['statements'];
           if (statements == null ||
               (statements is List && statements.length < 3) ||
@@ -2401,6 +2567,13 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Chronologie Mélangée':
+          if (game['events'] == null) {
+            game['events'] =
+                game['steps'] ??
+                game['dates'] ??
+                game['timeline'] ??
+                game['items'];
+          }
           final events = game['events'];
           if (events == null || (events is List && events.length < 3)) {
             print(
@@ -2410,6 +2583,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Qui suis-je ?':
+          if (game['riddle'] == null && game['question'] != null) {
+            game['riddle'] = game['question'];
+          }
           if (game['riddle'] == null || game['answer'] == null) {
             print(
               "[VALIDATION] -> INVALIDE (Qui suis-je ?): champs manquants.",
@@ -2418,6 +2594,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Le Mot Anagramme':
+          if (game['solution'] != null && game['anagram'] == null) {
+            game['anagram'] = game['solution'];
+          }
           if (game['anagram'] == null || game['solution'] == null) {
             print("[VALIDATION] -> INVALIDE (Anagramme): champs manquants.");
             isGameValid = false;
@@ -2433,6 +2612,11 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Estimation':
+          if (game['answer'] is String) {
+            game['answer'] = num.tryParse(
+              game['answer'].toString().replaceAll(RegExp(r'[^\d.-]'), ''),
+            );
+          }
           final answer = game['answer'];
           if (game['question'] == null || answer == null || (answer is! num)) {
             print(
@@ -2442,6 +2626,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           }
           break;
         case 'Quiz par Indices':
+          if (game['clues'] == null && game['hints'] != null) {
+            game['clues'] = game['hints'];
+          }
           final clues = game['clues'];
           if (clues == null ||
               (clues is List && clues.length < 2) ||
@@ -2900,6 +3087,23 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     _executeCreateOnlineRoom(playerName, settings, selectedQuiz, saveToQuiz);
   }
 
+  List<dynamic> _sanitizeGamesForMultiplayer(List<dynamic> games) {
+    return games.map((game) {
+      if (game is! Map) return game;
+      final sanitized = Map<String, dynamic>.from(game);
+      // Supprimer totalement les réponses des parties partagées aux clients
+      sanitized.remove('correct');
+      sanitized.remove('answer');
+      sanitized.remove('intruder');
+      sanitized.remove('lie');
+      // Pour les jeux comme Pendu / Anagramme / Mot Mystère, on ne garde que la longueur
+      if (sanitized.containsKey('word')) {
+        sanitized['wordLength'] = sanitized['word'].toString().length;
+      }
+      return sanitized;
+    }).toList();
+  }
+
   void _executeCreateOnlineRoom(
     String playerName,
     OnlineRoomSettings settings,
@@ -2932,7 +3136,8 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
     try {
       final code = _generateInviteCode();
-      final games = List<dynamic>.from(gamesList);
+      final String hostUid =
+          _currentUser?.uid ?? 'guest_${DateTime.now().millisecondsSinceEpoch}';
 
       DocumentReference roomRef = await FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -2943,9 +3148,11 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
             'quizText': quizText,
             'theme': theme,
             'settings': settings.toMap(),
-            'games': games,
+            'games': gamesList,
+            'lastHeartbeat': FieldValue.serverTimestamp(),
             'players': {
-              playerName: {
+              hostUid: {
+                'name': playerName,
                 'isHost': true,
                 'score': 0,
                 'uid': _currentUser?.uid,
@@ -2967,7 +3174,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         await FirebaseFirestore.instance
             .collection('quizzes')
             .doc(selectedQuiz['quizId'])
-            .update({'games': games});
+            .update({'games': gamesList});
       }
 
       // LA CORRECTION PRINCIPALE EST ICI : on vérifie à nouveau après le "await"
@@ -3011,9 +3218,14 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           title: const Text('Entrez votre pseudo'),
           content: TextField(
             autofocus: true,
+            maxLength: 20,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[a-zA-Z0-9_\- ]')),
+            ],
             decoration: const InputDecoration(
               labelText: 'Pseudo',
               hintText: 'Votre nom en jeu',
+              counterText: '',
             ),
             onChanged: (value) {
               tempPseudo = value;
@@ -3061,21 +3273,6 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         return;
       }
       final roomDoc = querySnapshot.docs.first;
-      final roomData = roomDoc.data();
-      if (roomData['started'] == true) {
-        setState(() {
-          _status = 'Impossible de rejoindre une partie déjà commencée.';
-        });
-        return;
-      }
-      final players = Map<String, dynamic>.from(roomData['players'] ?? {});
-      final settings = OnlineRoomSettings.fromMap(roomData['settings']);
-      if (players.length >= settings.maxPlayers) {
-        setState(() {
-          _status = 'La salle est pleine.';
-        });
-        return;
-      }
       String finalPlayerName = playerName;
 
       if (widget.isGuest) {
@@ -3089,20 +3286,40 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         finalPlayerName = pseudo.trim();
       }
 
-      if (players.containsKey(finalPlayerName)) {
-        setState(() {
-          _status =
-              'Vous êtes déjà dans cette salle ou un joueur porte ce nom.';
-        });
-        return;
-      }
+      final String playerUid =
+          _currentUser?.uid ?? 'guest_${DateTime.now().millisecondsSinceEpoch}';
 
-      await roomDoc.reference.update({
-        'players.$finalPlayerName': {
-          'isHost': false,
-          'score': 0,
-          'uid': _currentUser?.uid,
-        },
+      await FirebaseFirestore.instance.runTransaction((transaction) async {
+        final snapshot = await transaction.get(roomDoc.reference);
+        if (!snapshot.exists) {
+          throw Exception('La salle n\'existe plus.');
+        }
+        final roomData = snapshot.data() as Map<String, dynamic>;
+        if (roomData['started'] == true) {
+          throw Exception('Impossible de rejoindre une partie déjà commencée.');
+        }
+        final players = Map<String, dynamic>.from(roomData['players'] ?? {});
+        final settings = OnlineRoomSettings.fromMap(roomData['settings']);
+        if (players.length >= settings.maxPlayers) {
+          throw Exception('La salle est déjà pleine.');
+        }
+        if (players.containsKey(playerUid) ||
+            players.values.any(
+              (p) => p is Map && p['name'] == finalPlayerName,
+            )) {
+          throw Exception(
+            'Vous êtes déjà dans cette salle ou un joueur porte ce nom.',
+          );
+        }
+
+        transaction.update(roomDoc.reference, {
+          'players.$playerUid': {
+            'name': finalPlayerName,
+            'isHost': false,
+            'score': 0,
+            'uid': playerUid,
+          },
+        });
       });
 
       setState(() {
@@ -3117,14 +3334,17 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                 inviteCode: code,
                 isHost: false,
                 playerName: finalPlayerName,
-                maxPlayers: settings.maxPlayers,
+                maxPlayers:
+                    OnlineRoomSettings.fromMap(
+                      roomDoc.data()['settings'],
+                    ).maxPlayers,
                 isGuest: widget.isGuest,
               ),
         ),
       );
     } catch (e) {
       setState(() {
-        _status = 'Erreur lors de la recherche de la salle : $e';
+        _status = e.toString().replaceAll('Exception: ', '');
       });
     }
   }
@@ -3144,13 +3364,29 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
       final roomSnapshot = await query.get();
 
+      final activeThreshold = DateTime.now().subtract(
+        const Duration(seconds: 30),
+      );
+
+      final currentUid = FirebaseAuth.instance.currentUser?.uid;
+
       final availableRooms =
           roomSnapshot.docs.where((doc) {
             final data = doc.data() as Map<String, dynamic>;
             final players = data['players'] as Map<String, dynamic>? ?? {};
             final settings = OnlineRoomSettings.fromMap(data['settings']);
-            return players.length < settings.maxPlayers &&
-                !players.containsKey(playerName);
+            final lastHeartbeat =
+                (data['lastHeartbeat'] as Timestamp?)?.toDate();
+            final isAlive =
+                lastHeartbeat == null || lastHeartbeat.isAfter(activeThreshold);
+
+            final alreadyInside =
+                (currentUid != null && players.containsKey(currentUid)) ||
+                players.values.any((p) => p is Map && p['name'] == playerName);
+
+            return isAlive &&
+                players.length < settings.maxPlayers &&
+                !alreadyInside;
           }).toList();
 
       if (availableRooms.isEmpty) {
@@ -3190,8 +3426,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
   }
 
   String _generateInviteCode() {
-    final random = Random();
-    return List.generate(6, (index) => random.nextInt(10)).join();
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    final random = Random.secure();
+    return List.generate(6, (_) => chars[random.nextInt(chars.length)]).join();
   }
 
   void _showVipAdvantagesPopup() {
@@ -3264,10 +3501,8 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
       return;
     }
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_currentUser!.uid)
-          .update({'isVip': true});
+      final callable = FirebaseFunctions.instance.httpsCallable('activateVip');
+      await callable.call({'isVip': true});
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Félicitations ! Vous êtes maintenant un membre VIP !'),
@@ -3308,10 +3543,10 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
     if (confirm == true) {
       try {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(_currentUser!.uid)
-            .update({'isVip': false});
+        final callable = FirebaseFunctions.instance.httpsCallable(
+          'activateVip',
+        );
+        await callable.call({'isVip': false});
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Vous avez bien été désabonné.'),
@@ -3379,41 +3614,56 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
               ),
             ];
 
-    final destinations =
-        widget.isGuest
-            ? const [
-              NavigationDestination(
-                icon: Icon(Icons.login),
-                label: 'Rejoindre',
-              ),
-            ]
-            : const [
-              NavigationDestination(
-                icon: Icon(Icons.create_outlined),
-                selectedIcon: Icon(Icons.create),
-                label: 'Créer',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.extension_outlined),
-                selectedIcon: Icon(Icons.extension),
-                label: 'Mes Jeux',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.leaderboard_outlined),
-                selectedIcon: Icon(Icons.leaderboard),
-                label: 'Classement',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.psychology_alt_outlined),
-                selectedIcon: Icon(Icons.psychology_alt),
-                label: 'Mon QI',
-              ),
-              NavigationDestination(
-                icon: Icon(Icons.people_outline),
-                selectedIcon: Icon(Icons.people),
-                label: 'Amis',
-              ),
-            ];
+    List<NavigationDestination> buildDestinationsList(int pendingFriendRequests) {
+      if (widget.isGuest) {
+        return const [
+          NavigationDestination(
+            icon: Icon(Icons.login),
+            label: 'Rejoindre',
+          ),
+        ];
+      }
+
+      return [
+        const NavigationDestination(
+          icon: Icon(Icons.create_outlined),
+          selectedIcon: Icon(Icons.create),
+          label: 'Créer',
+        ),
+        const NavigationDestination(
+          icon: Icon(Icons.extension_outlined),
+          selectedIcon: Icon(Icons.extension),
+          label: 'Mes Jeux',
+        ),
+        const NavigationDestination(
+          icon: Icon(Icons.leaderboard_outlined),
+          selectedIcon: Icon(Icons.leaderboard),
+          label: 'Classement',
+        ),
+        const NavigationDestination(
+          icon: Icon(Icons.psychology_alt_outlined),
+          selectedIcon: Icon(Icons.psychology_alt),
+          label: 'Mon QI',
+        ),
+        NavigationDestination(
+          icon: pendingFriendRequests > 0
+              ? Badge.count(
+                  count: pendingFriendRequests,
+                  backgroundColor: Colors.redAccent,
+                  child: const Icon(Icons.people_outline),
+                )
+              : const Icon(Icons.people_outline),
+          selectedIcon: pendingFriendRequests > 0
+              ? Badge.count(
+                  count: pendingFriendRequests,
+                  backgroundColor: Colors.redAccent,
+                  child: const Icon(Icons.people),
+                )
+              : const Icon(Icons.people),
+          label: 'Amis',
+        ),
+      ];
+    }
 
     return Scaffold(
       appBar: AppBar(
@@ -3532,20 +3782,32 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
       bottomNavigationBar:
           widget.isGuest
               ? null
-              : NavigationBar(
-                height: 74,
-                selectedIndex: _currentTabIndex,
-                onDestinationSelected:
-                    (index) => setState(() => _currentTabIndex = index),
-                labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-                backgroundColor:
-                    isDark ? AppColors.midnightSurface : Colors.white,
-                indicatorColor: (isDark
-                        ? AppColors.neonCyan
-                        : AppColors.primaryBlue)
-                    .withOpacity(0.18),
-                destinations: destinations,
-              ),
+              : StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseFirestore.instance
+                      .collection('friendRequests')
+                      .where('receiverId', isEqualTo: _currentUser?.uid)
+                      .where('status', isEqualTo: 'pending')
+                      .snapshots(),
+                  builder: (context, snapshot) {
+                    final int pendingCount =
+                        snapshot.hasData ? snapshot.data!.docs.length : 0;
+                    return NavigationBar(
+                      height: 74,
+                      selectedIndex: _currentTabIndex,
+                      onDestinationSelected:
+                          (index) => setState(() => _currentTabIndex = index),
+                      labelBehavior:
+                          NavigationDestinationLabelBehavior.alwaysShow,
+                      backgroundColor:
+                          isDark ? AppColors.midnightSurface : Colors.white,
+                      indicatorColor: (isDark
+                              ? AppColors.neonCyan
+                              : AppColors.primaryBlue)
+                          .withOpacity(0.18),
+                      destinations: buildDestinationsList(pendingCount),
+                    );
+                  },
+                ),
     );
   }
 
@@ -4985,6 +5247,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
   final _cHint = TextEditingController();
   final _cImageUrl = TextEditingController(); // Image de la question
   final _cTimeLimit = TextEditingController();
+  final _cMaxMistakes = TextEditingController();
 
   // Listes dynamiques pour les options (QCM, Intrus, Quiz Eclair)
   List<TextEditingController> _optionsTexts = [
@@ -5150,6 +5413,11 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
         _cPairDefs.add(TextEditingController());
         _cPairImgUrls.add(TextEditingController());
       }
+      if (type == 'Memory') {
+        if (g['maxMistakes'] != null) {
+          _cMaxMistakes.text = g['maxMistakes'].toString();
+        }
+      }
     }
   }
 
@@ -5164,6 +5432,7 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
       _cHint,
       _cImageUrl,
       _cTimeLimit,
+      _cMaxMistakes,
       _cImgOpt1,
       _cImgOpt2,
       _cImgOpt3,
@@ -5180,74 +5449,72 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
     super.dispose();
   }
 
-  // Fonction appelée quand on clique sur le bouton "Uploader"
   Future<void> _pickAndUploadImage(TextEditingController controller) async {
     try {
-      // 1. Ouvrir la galerie pour choisir une image
       final ImagePicker picker = ImagePicker();
       final XFile? image = await picker.pickImage(
         source: ImageSource.gallery,
-        imageQuality: 70, // Réduire légèrement la qualité pour alléger l'upload
+        imageQuality: 70,
       );
 
-      if (image == null) return; // L'utilisateur a annulé
+      if (image == null) return;
 
-      // 2. Afficher un indicateur de chargement
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2,
-                  ),
-                ),
-                SizedBox(width: 16),
-                Text("Upload de l'image en cours..."),
-              ],
+      final Uint8List bytes = await image.readAsBytes();
+      if (bytes.length < 4) throw Exception("Fichier trop court ou corrompu.");
+
+      // Validation des Magic Numbers (JPEG, PNG, GIF, WEBP)
+      final isJpeg = bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF;
+      final isPng =
+          bytes[0] == 0x89 &&
+          bytes[1] == 0x50 &&
+          bytes[2] == 0x4E &&
+          bytes[3] == 0x47;
+      final isGif = bytes[0] == 0x47 && bytes[1] == 0x49 && bytes[2] == 0x46;
+      final isWebp =
+          bytes.length >= 12 &&
+          bytes[0] == 0x52 &&
+          bytes[1] == 0x49 &&
+          bytes[2] == 0x46 &&
+          bytes[3] == 0x46;
+
+      if (!isJpeg && !isPng && !isGif && !isWebp) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                "Format de fichier non sécurisé. Utilisez JPG, PNG ou WEBP uniquement.",
+              ),
+              backgroundColor: Colors.red,
             ),
-            duration: Duration(minutes: 1), // Reste affiché pendant l'upload
-          ),
-        );
+          );
+        }
+        return;
       }
 
-      // 3. Lire les données de l'image (readAsBytes fonctionne sur Mobile ET sur Web)
-      final Uint8List imageData = await image.readAsBytes();
+      final mimeType =
+          isPng
+              ? 'image/png'
+              : (isGif ? 'image/gif' : (isWebp ? 'image/webp' : 'image/jpeg'));
 
-      // 4. Préparer le chemin dans Firebase Storage
       final user = FirebaseAuth.instance.currentUser;
-      final String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      final String fileName = '${timestamp}_${image.name}';
-
+      final String fileName =
+          '${DateTime.now().millisecondsSinceEpoch}_${image.name}';
       final Reference storageRef = FirebaseStorage.instance
           .ref()
           .child('quiz_images')
           .child(user?.uid ?? 'anonymous')
           .child(fileName);
 
-      // 5. Lancer l'upload
       final UploadTask uploadTask = storageRef.putData(
-        imageData,
-        SettableMetadata(contentType: 'image/jpeg'), // Forcer le type MIME
+        bytes,
+        SettableMetadata(contentType: mimeType),
       );
 
       final TaskSnapshot snapshot = await uploadTask;
-
-      // 6. Récupérer l'URL publique
       final String downloadUrl = await snapshot.ref.getDownloadURL();
 
-      // 7. Mettre à jour l'interface
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).hideCurrentSnackBar(); // Cacher le chargement
-        setState(() {
-          controller.text = downloadUrl; // Assigne l'URL au champ texte
-        });
+        setState(() => controller.text = downloadUrl);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("Image uploadée avec succès !"),
@@ -5256,12 +5523,10 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
         );
       }
     } catch (e) {
-      print("Erreur d'upload : $e");
       if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text("Erreur lors de l'upload : $e"),
+            content: Text("Erreur d'upload : $e"),
             backgroundColor: Colors.red,
           ),
         );
@@ -5277,6 +5542,18 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
     final imgUrl = _cImageUrl.text.trim();
     final timeLimitStr = _cTimeLimit.text.trim();
     final timeLimit = int.tryParse(timeLimitStr);
+
+    if (imgUrl.isNotEmpty && !isValidImageUrl(imgUrl)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'URL d\'image non autorisée. Utilisez Firebase Storage, Openverse, Flickr ou Pixabay.',
+          ),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return null;
+    }
 
     final base = {
       'type': type,
@@ -5504,6 +5781,13 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
           ),
         );
         return null;
+      }
+
+      if (type == 'Memory') {
+        final maxMistakes = int.tryParse(_cMaxMistakes.text.trim());
+        if (maxMistakes != null) {
+          base['maxMistakes'] = maxMistakes;
+        }
       }
 
       return {
@@ -5859,6 +6143,18 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                         icon: const Icon(Icons.add),
                         label: const Text('Ajouter une paire'),
                       ),
+                      if (type == 'Memory') ...[
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: _cMaxMistakes,
+                          keyboardType: TextInputType.number,
+                          decoration: const InputDecoration(
+                            labelText: "Nombre d'erreurs autorisées (laisser vide pour auto)",
+                            hintText: "Ex: 4",
+                            prefixIcon: Icon(Icons.heart_broken_outlined),
+                          ),
+                        ),
+                      ],
                     ],
                   ],
                 ),
@@ -6402,13 +6698,13 @@ class AllQuizzesPage extends StatefulWidget {
   final Function(List<dynamic>, String, String?) onPlay;
   final Function(Map<String, dynamic>) onCompleteAI; // NOUVEAU
   final bool isGuest;
-
   const AllQuizzesPage({
     super.key,
     required this.onPlay,
     required this.isGuest,
     required this.onCompleteAI, // NOUVEAU
   });
+
   @override
   State<AllQuizzesPage> createState() => _AllQuizzesPageState();
 }
@@ -6432,11 +6728,22 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
       builder: (context) {
         String tempTitle = '';
         return AlertDialog(
-          title: const Text('Titre de votre jeu'),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          title: const Text(
+            'Titre de votre jeu',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
           content: TextField(
             autofocus: true,
             onChanged: (value) => tempTitle = value,
-            decoration: const InputDecoration(hintText: 'Ex: Histoire Romaine'),
+            decoration: const InputDecoration(
+              hintText: 'Ex: Histoire Romaine',
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.all(Radius.circular(12)),
+              ),
+            ),
           ),
           actions: [
             TextButton(
@@ -6445,13 +6752,17 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
             ),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, tempTitle),
+              style: ElevatedButton.styleFrom(
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+              ),
               child: const Text('Créer'),
             ),
           ],
         );
       },
     );
-
     if (title != null && title.trim().isNotEmpty) {
       if (widget.isGuest) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -6472,9 +6783,8 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
           'theme': 'Général',
         });
         _loadQuizzes();
-        if (_currentUser?.uid != null) {
+        if (_currentUser?.uid != null)
           AppBadges.checkCreationBadges(context, _currentUser!.uid);
-        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -6485,11 +6795,10 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
           );
         }
       } catch (e) {
-        if (mounted) {
+        if (mounted)
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(SnackBar(content: Text('Erreur : $e')));
-        }
       }
     }
   }
@@ -6505,7 +6814,6 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
       if (mounted) setState(() => _isLoading = false);
       return;
     }
-
     try {
       final snapshot =
           await FirebaseFirestore.instance
@@ -6598,149 +6906,325 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
     }
   }
 
+  // Menu d'actions minimaliste
+  void _showActionsMenu(BuildContext context, Map<String, dynamic> quiz) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final cardBg = Theme.of(context).cardColor;
+    final textColor = Theme.of(context).colorScheme.onSurface;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder:
+          (ctx) => Container(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
+            decoration: BoxDecoration(
+              color: cardBg,
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(24),
+              ),
+              border: isDark ? Border.all(color: Colors.white10) : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(
+                    Icons.auto_awesome,
+                    color: AppColors.quizPurple,
+                  ),
+                  title: Text(
+                    'Compléter avec l\'IA',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: textColor,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    widget.onCompleteAI(quiz);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.edit_outlined, color: Colors.blue),
+                  title: Text(
+                    'Modifier manuellement',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: textColor,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _editQuiz(quiz['id'], quiz['games'] ?? []);
+                  },
+                ),
+                ListTile(
+                  leading: Icon(
+                    quiz['isPublic']
+                        ? Icons.lock_outline
+                        : Icons.public_outlined,
+                    color: Colors.orange,
+                  ),
+                  title: Text(
+                    quiz['isPublic'] ? 'Rendre Privé' : 'Rendre Public',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: textColor,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _togglePublicStatus(quiz['id'], quiz['isPublic']);
+                  },
+                ),
+                Divider(
+                  height: 20,
+                  color: isDark ? Colors.white12 : Colors.grey.shade300,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delete_outline, color: Colors.red),
+                  title: const Text(
+                    'Supprimer ce quiz',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _deleteQuiz(quiz['id']);
+                  },
+                ),
+                const SizedBox(height: 10),
+              ],
+            ),
+          ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createNewGame,
-        icon: const Icon(Icons.add),
-        label: const Text('Créer un jeu'),
-        backgroundColor: Colors.indigo,
+        icon: const Icon(Icons.add_rounded),
+        label: const Text(
+          'Créer un jeu',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
+        backgroundColor: AppColors.primaryBlue,
         foregroundColor: Colors.white,
+        elevation: 4,
       ),
       body:
           _isLoading
               ? const Center(child: CircularProgressIndicator())
               : _quizzes.isEmpty
-              ? const Center(
+              ? Center(
                 child: Padding(
-                  padding: EdgeInsets.all(16.0),
-                  child: Text(
-                    'Vous n\'avez pas encore créé de quiz. Allez dans l\'onglet "Créer" pour commencer !',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 18),
+                  padding: const EdgeInsets.all(32.0),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        Icons.folder_open_rounded,
+                        size: 64,
+                        color: Colors.grey.shade400,
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Aucun quiz pour le moment',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Appuyez sur + pour commencer à créer votre premier défi.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(color: Colors.grey.shade500),
+                      ),
+                    ],
                   ),
                 ),
               )
               : ListView.builder(
-                padding: const EdgeInsets.all(8.0),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
                 itemCount: _quizzes.length,
                 itemBuilder: (context, index) {
                   final quiz = _quizzes[index];
-                  final userName = quiz['userName']?.toString() ?? 'Anonyme';
+                  final userName = quiz['userName']?.toString() ?? 'Moi';
                   final textPreview =
-                      (quiz['text']?.toString() ?? '').length > 50
-                          ? '${quiz['text'].toString().substring(0, 50)}...'
+                      (quiz['text']?.toString() ?? '').length > 60
+                          ? '${quiz['text'].toString().substring(0, 60)}...'
                           : quiz['text']?.toString() ?? '';
                   final isPublic = quiz['isPublic'] as bool? ?? false;
                   final gamesInQuiz =
                       (quiz['games'] as List<dynamic>?)
-                          ?.map((g) => g['type'] as String? ?? 'Inconnu')
+                          ?.map((g) => g['type'] as String? ?? '?')
                           .toSet()
                           .toList() ??
                       [];
 
                   return Card(
-                    margin: const EdgeInsets.symmetric(vertical: 8.0),
+                    margin: const EdgeInsets.only(bottom: 16),
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(20),
+                      side: BorderSide(
+                        color: isDark ? Colors.white12 : Colors.grey.shade200,
+                      ),
+                    ),
                     child: ExpansionTile(
-                      leading: const Icon(Icons.quiz, color: Colors.indigo),
-                      title: Text('Quiz de $userName'),
-                      subtitle: Text(textPreview),
-                      trailing: const Icon(Icons.arrow_downward),
-                      children: [
-                        if (gamesInQuiz.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                            child: Wrap(
-                              spacing: 8.0,
-                              runSpacing: 4.0,
-                              children:
-                                  gamesInQuiz
-                                      .map(
-                                        (gameName) => Chip(
-                                          label: Text(gameName),
-                                          backgroundColor:
-                                              Colors.indigo.shade50,
-                                        ),
-                                      )
-                                      .toList(),
+                      tilePadding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 8,
+                      ),
+                      collapsedShape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      leading: Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryBlue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.quiz_rounded,
+                          color: AppColors.primaryBlue,
+                        ),
+                      ),
+                      title: Text(
+                        quiz['text']?.toString() ?? 'Sans titre',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Theme.of(context).colorScheme.onSurface,
+                        ),
+                      ),
+                      subtitle: Row(
+                        children: [
+                          if (isPublic)
+                            const Icon(
+                              Icons.public,
+                              size: 12,
+                              color: Colors.green,
+                            ),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${gamesInQuiz.length} jeux • $userName',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color:
+                                  isDark
+                                      ? Colors.white60
+                                      : Colors.grey.shade600,
                             ),
                           ),
-                        const Divider(),
+                        ],
+                      ),
+                      trailing: Icon(
+                        Icons.expand_more_rounded,
+                        color: isDark ? Colors.white60 : Colors.grey,
+                      ),
+                      children: [
                         Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16.0,
-                            vertical: 8.0,
-                          ),
-                          child: Wrap(
-                            spacing: 8.0,
-                            runSpacing: 8.0,
-                            alignment: WrapAlignment.center,
+                          padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              ElevatedButton.icon(
-                                onPressed: () {
-                                  widget.onPlay(
-                                    quiz['games'] ?? [],
-                                    quiz['text'] ?? '',
-                                    quiz['id'],
-                                  );
-                                },
-                                icon: const Icon(Icons.play_arrow),
-                                label: const Text('Jouer'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: Colors.green,
+                              if (gamesInQuiz.isNotEmpty)
+                                Wrap(
+                                  spacing: 6,
+                                  runSpacing: 6,
+                                  children:
+                                      gamesInQuiz
+                                          .take(5)
+                                          .map(
+                                            (gameName) => Chip(
+                                              label: Text(
+                                                gameName,
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color:
+                                                      isDark
+                                                          ? Colors.white70
+                                                          : Colors.black87,
+                                                ),
+                                              ),
+                                              backgroundColor:
+                                                  isDark
+                                                      ? Colors.white10
+                                                      : Colors.grey.shade100,
+                                              side: BorderSide.none,
+                                              padding: EdgeInsets.zero,
+                                              visualDensity:
+                                                  VisualDensity.compact,
+                                            ),
+                                          )
+                                          .toList(),
+                                ),
+                              const SizedBox(height: 16),
+                              // Action Principale : Jouer
+                              SizedBox(
+                                width: double.infinity,
+                                height: 48,
+                                child: ElevatedButton.icon(
+                                  onPressed:
+                                      () => widget.onPlay(
+                                        quiz['games'] ?? [],
+                                        quiz['text'] ?? '',
+                                        quiz['id'],
+                                      ),
+                                  icon: const Icon(Icons.play_arrow_rounded),
+                                  label: const Text(
+                                    'Lancer le Quiz',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: AppColors.primaryBlue,
+                                    foregroundColor: Colors.white,
+                                    elevation: 0,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                  ),
                                 ),
                               ),
-                              // NOUVEAU BOUTON ICI
-                              if (!widget.isGuest)
-                                ElevatedButton.icon(
-                                  onPressed: () => widget.onCompleteAI(quiz),
-                                  icon: const Icon(Icons.auto_awesome),
-                                  label: const Text('Compléter (IA)'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.quizPurple,
-                                    foregroundColor: Colors.white,
+                              const SizedBox(height: 12),
+                              // Actions Secondaires : Menu Minimaliste
+                              OutlinedButton.icon(
+                                onPressed:
+                                    () => _showActionsMenu(context, quiz),
+                                icon: const Icon(Icons.more_horiz_rounded),
+                                label: const Text('Options & Édition'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor:
+                                      isDark
+                                          ? Colors.white70
+                                          : Colors.grey.shade700,
+                                  side: BorderSide(
+                                    color:
+                                        isDark
+                                            ? Colors.white24
+                                            : Colors.grey.shade300,
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
                                   ),
                                 ),
-                              if (!widget.isGuest)
-                                ElevatedButton.icon(
-                                  onPressed:
-                                      () => _togglePublicStatus(
-                                        quiz['id'],
-                                        isPublic,
-                                      ),
-                                  icon: Icon(
-                                    isPublic ? Icons.public_off : Icons.public,
-                                  ),
-                                  label: Text(isPublic ? 'Privé' : 'Public'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        isPublic ? Colors.orange : Colors.blue,
-                                  ),
-                                ),
-                              if (!widget.isGuest)
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.edit,
-                                    color: Colors.indigo,
-                                  ),
-                                  onPressed:
-                                      () => _editQuiz(
-                                        quiz['id'],
-                                        quiz['games'] ?? [],
-                                      ),
-                                  tooltip: 'Modifier manuellement',
-                                ),
-                              if (!widget.isGuest)
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.delete,
-                                    color: Colors.red,
-                                  ),
-                                  onPressed: () => _deleteQuiz(quiz['id']),
-                                  tooltip: 'Supprimer ce quiz',
-                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -7265,7 +7749,6 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
 
 class MyIQPage extends StatefulWidget {
   final String userId;
-
   const MyIQPage({super.key, required this.userId});
 
   @override
@@ -7281,34 +7764,43 @@ class _MyIQPageState extends State<MyIQPage> {
   String _recommendation =
       "Jouez à plus de quiz pour une analyse plus approfondie !";
   List<Map<String, dynamic>> _gameHistory = [];
-
   List<String> _myBadges = [];
+  StreamSubscription<DocumentSnapshot>? _userSubscription;
 
   @override
   void initState() {
     super.initState();
-    _loadIQData();
+    _listenToUserData();
+    _loadStatsAndHistory();
   }
 
-  Future<void> _loadIQData() async {
+  @override
+  void dispose() {
+    _userSubscription?.cancel();
+    super.dispose();
+  }
+
+  // --- ÉCOUTE TEMPS RÉEL DU PROFIL ET DES BADGES ---
+  void _listenToUserData() {
+    _userSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(widget.userId)
+        .snapshots()
+        .listen((userDoc) {
+      if (userDoc.exists && mounted) {
+        setState(() {
+          _iq = (userDoc.data()?['iq'] as num? ?? 100.0).toDouble();
+          _myBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
+        });
+      }
+    });
+  }
+
+  Future<void> _loadStatsAndHistory() async {
     setState(() {
       _isLoading = true;
     });
-
     try {
-      final userDoc =
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(widget.userId)
-              .get();
-      if (userDoc.exists) {
-        _iq = (userDoc.data()?['iq'] as num? ?? 100.0).toDouble();
-        _myBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
-      } else {
-        _iq = 100.0;
-        _myBadges = [];
-      }
-
       final statsDoc =
           await FirebaseFirestore.instance
               .collection('userStats')
@@ -7326,27 +7818,24 @@ class _MyIQPageState extends State<MyIQPage> {
               .orderBy('timestamp', descending: true)
               .limit(20)
               .get();
-      _gameHistory = userHistorySnapshot.docs.map((doc) => doc.data()).toList();
 
+      _gameHistory = userHistorySnapshot.docs.map((doc) => doc.data()).toList();
       await _analyzeThemes(statsData);
     } catch (e) {
       print('Erreur lors du chargement des données QI : $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur lors du chargement des données : $e')),
-        );
-      }
     }
-
-    setState(() {
-      _isLoading = false;
-    });
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _analyzeThemes(Map<String, dynamic> statsData) async {
     _themesPerformance.clear();
     _testedThemes.clear();
     _untestedThemes.clear();
+
     Set<String> allPossibleThemes = {
       'Histoire',
       'Géographie',
@@ -7363,8 +7852,8 @@ class _MyIQPageState extends State<MyIQPage> {
       'Nature',
       'Cuisine',
     };
-    Set<String> userTestedThemes = {};
 
+    Set<String> userTestedThemes = {};
     statsData.forEach((theme, data) {
       if (data is Map<String, dynamic>) {
         _themesPerformance[theme] = data;
@@ -7377,7 +7866,6 @@ class _MyIQPageState extends State<MyIQPage> {
         allPossibleThemes
             .where((theme) => !userTestedThemes.contains(theme))
             .toList();
-
     _generateRecommendation(statsData);
   }
 
@@ -7411,28 +7899,24 @@ class _MyIQPageState extends State<MyIQPage> {
     });
 
     List<String> recommendations = [];
-
-    if (weakTheme.isNotEmpty && minSuccessRate < 0.6) {
+    if (weakTheme.isNotEmpty && minSuccessRate < 0.7) {
       recommendations.add(
         "📚 Point faible détecté en '$weakTheme' (score ajusté : ${(minSuccessRate * 100).toStringAsFixed(0)}%). Entraînez-vous davantage !",
       );
     }
-
     if (strongTheme.isNotEmpty &&
-        maxSuccessRate >= 0.8 &&
+        maxSuccessRate >= 0.7 &&
         strongTheme != weakTheme) {
       recommendations.add(
         "⭐ Vous excellez en '$strongTheme' (score ajusté : ${(maxSuccessRate * 100).toStringAsFixed(0)}%). Continuez !",
       );
     }
-
     if (_untestedThemes.isNotEmpty) {
       final unexplored = _untestedThemes.take(2).join(' et ');
       recommendations.add(
         "🌐 Explorez de nouveaux thèmes : $unexplored pour améliorer votre QI global !",
       );
     }
-
     if (_iq >= 130) {
       recommendations.add(
         "🧠 QI exceptionnel ! Essayez des quiz de difficulté maximale pour vous challenger.",
@@ -7445,251 +7929,313 @@ class _MyIQPageState extends State<MyIQPage> {
 
     _recommendation =
         recommendations.isNotEmpty
-            ? recommendations.join('\n\n')
+            ? recommendations.join('\n')
             : "Excellent travail ! Continuez à jouer pour maintenir votre QI élevé.";
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+
     return Scaffold(
+      backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
       body:
           _isLoading
               ? const Center(child: CircularProgressIndicator())
-              : SingleChildScrollView(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Card(
-                      elevation: 4,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          children: [
-                            // NOUVEAU : Message de bienvenue
-                            Text(
-                              'Bonjour ${FirebaseAuth.instance.currentUser?.displayName ?? "Joueur"} 👋',
-                              style: const TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
+              : CustomScrollView(
+                slivers: [
+                  // --- HEADER QI ---
+                  SliverToBoxAdapter(
+                    child: Container(
+                      padding: const EdgeInsets.fromLTRB(20, 60, 20, 30),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                          colors:
+                              isDark
+                                  ? [
+                                    AppColors.midnightSurface,
+                                    AppColors.deepBlue,
+                                  ]
+                                  : [
+                                    AppColors.primaryBlue,
+                                    AppColors.quizPurple,
+                                  ],
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            'Bonjour ${FirebaseAuth.instance.currentUser?.displayName ?? "Joueur"} 👋',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w500,
+                              color: Colors.white.withOpacity(0.9),
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.1),
+                              shape: BoxShape.circle,
+                              border: Border.all(
+                                color: Colors.white.withOpacity(0.2),
+                                width: 2,
                               ),
                             ),
-                            const SizedBox(height: 16),
-                            const Text(
-                              'Votre QI de culture générale',
-                              style: TextStyle(
-                                fontSize: 22,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.indigo,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
+                            child: Text(
                               _iq.toStringAsFixed(0),
                               style: const TextStyle(
-                                fontSize: 64,
+                                fontSize: 56,
                                 fontWeight: FontWeight.bold,
-                                color: Colors.deepOrange,
+                                color: Colors.white,
+                                letterSpacing: -2,
                               ),
                             ),
-                          ],
-                        ),
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'QI de Culture Générale',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.white.withOpacity(0.7),
+                              letterSpacing: 1.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    // --- AJOUT DE LA SECTION BADGES ---
-                    const SizedBox(height: 24),
-                    Card(
-                      elevation: 4,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Mes Badges Débloqués',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
+                  ),
+
+                  // --- CONTENU PRINCIPAL ---
+                  SliverPadding(
+                    padding: const EdgeInsets.all(16),
+                    sliver: SliverList(
+                      delegate: SliverChildListDelegate([
+                        // RECOMMANDATION IA
+                        StyledCard(
+                          padding: const EdgeInsets.all(16),
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons.psychology_outlined,
+                                color: primaryColor,
+                                size: 24,
                               ),
-                            ),
-                            const SizedBox(height: 16),
-                            AppBadges.buildBadgeGrid(_myBadges),
-                          ],
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Analyse IA',
+                                      style: TextStyle(
+                                        fontSize: 16,
+                                        fontWeight: FontWeight.bold,
+                                        color:
+                                            isDark
+                                                ? Colors.white
+                                                : AppColors.deepBlue,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(
+                                      _recommendation,
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color:
+                                            isDark
+                                                ? Colors.grey[300]
+                                                : Colors.grey[700],
+                                        height: 1.4,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
+
+                        const SizedBox(height: 20),
+
+                        // BADGES
+                        Text(
+                          'Badges Débloqués',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : AppColors.deepBlue,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        AppBadges.buildBadgeGrid(_myBadges),
+
+                        const SizedBox(height: 24),
+
+                        // PERFORMANCE PAR THÈME
+                        Text(
+                          'Vos Points Forts',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : AppColors.deepBlue,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildThemeList(isStrong: true, isDark: isDark),
+
+                        const SizedBox(height: 24),
+
+                        Text(
+                          'À Améliorer',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : AppColors.deepBlue,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        _buildThemeList(isStrong: false, isDark: isDark),
+
+                        const SizedBox(height: 24),
+
+                        // THÈMES NON TESTÉS
+                        Text(
+                          'Thèmes à Explorer',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: isDark ? Colors.white : AppColors.deepBlue,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Wrap(
+                          spacing: 8.0,
+                          runSpacing: 8.0,
+                          children:
+                              _untestedThemes
+                                  .map(
+                                    (theme) => Chip(
+                                      avatar: Icon(
+                                        Icons.explore,
+                                        size: 16,
+                                        color: primaryColor,
+                                      ),
+                                      label: Text(
+                                        theme,
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          color:
+                                              isDark
+                                                  ? Colors.white
+                                                  : Colors.black87,
+                                        ),
+                                      ),
+                                      backgroundColor:
+                                          isDark
+                                              ? AppColors.midnightSurface
+                                              : Colors.grey[100],
+                                      side: BorderSide.none,
+                                    ),
+                                  )
+                                  .toList(),
+                        ),
+                        const SizedBox(height: 40), // Espace bas de page
+                      ]),
                     ),
-                    // -----------------------------------
-                    const SizedBox(height: 24),
-                    Card(
-                      elevation: 4,
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text(
-                              'Analyse de vos performances',
-                              style: TextStyle(
-                                fontSize: 20,
-                                fontWeight: FontWeight.bold,
-                              ),
+                  ),
+                ],
+              ),
+    );
+  }
+
+  Widget _buildThemeList({required bool isStrong, required bool isDark}) {
+    final entries =
+        _themesPerformance.entries.where((entry) {
+          int gamesPlayed = (entry.value['gamesPlayed'] as num?)?.toInt() ?? 0;
+          if (gamesPlayed < 2) return false;
+          double wsr =
+              (entry.value['weightedSuccessRate'] as num?)?.toDouble() ?? 0.0;
+          return isStrong ? wsr >= 0.7 : wsr < 0.7;
+        }).toList();
+
+    if (entries.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Text(
+          isStrong
+              ? 'Aucun point fort identifié pour l\'instant.'
+              : 'Aucun point faible majeur.',
+          style: TextStyle(
+            color: Colors.grey,
+            fontStyle: FontStyle.italic,
+            fontSize: 13,
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      children:
+          entries.map((entry) {
+            double wsr =
+                (entry.value['weightedSuccessRate'] as num?)?.toDouble() ?? 0.0;
+            int gamesPlayed =
+                (entry.value['gamesPlayed'] as num?)?.toInt() ?? 0;
+            final color =
+                isStrong ? AppColors.successGreen : AppColors.warningOrange;
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: isDark ? AppColors.midnightSurface : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: color.withOpacity(0.3)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isStrong ? Icons.trending_up : Icons.trending_down,
+                      color: color,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            entry.key,
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: isDark ? Colors.white : Colors.black87,
                             ),
-                            const SizedBox(height: 16),
-                            Text(
-                              'Recommandation: $_recommendation',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                color: Colors.black87,
-                              ),
+                          ),
+                          Text(
+                            '${(wsr * 100).toStringAsFixed(0)}% de réussite ($gamesPlayed quiz)',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color:
+                                  isDark ? Colors.grey[400] : Colors.grey[600],
                             ),
-                            const SizedBox(height: 16),
-                            const Divider(),
-                            const Text(
-                              'Vos points forts (thèmes joués au moins 2 fois, taux de réussite > 70%) :',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            _themesPerformance.isEmpty
-                                ? const Text(
-                                  'Aucun thème analysé pour l\'instant.',
-                                )
-                                : Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children:
-                                      _themesPerformance.entries
-                                          .where((entry) {
-                                            int gamesPlayed =
-                                                (entry.value['gamesPlayed']
-                                                        as num?)
-                                                    ?.toInt() ??
-                                                0;
-                                            if (gamesPlayed < 2) return false;
-                                            double wsr =
-                                                (entry.value['weightedSuccessRate']
-                                                        as num?)
-                                                    ?.toDouble() ??
-                                                0.0;
-                                            return wsr >= 0.7;
-                                          })
-                                          .map((entry) {
-                                            double wsr =
-                                                (entry.value['weightedSuccessRate']
-                                                        as num?)
-                                                    ?.toDouble() ??
-                                                0.0;
-                                            int gamesPlayed =
-                                                (entry.value['gamesPlayed']
-                                                        as num?)
-                                                    ?.toInt() ??
-                                                0;
-                                            return ListTile(
-                                              leading: const Icon(
-                                                Icons.check_circle,
-                                                color: Colors.green,
-                                              ),
-                                              title: Text(entry.key),
-                                              subtitle: Text(
-                                                'Taux de réussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz joués)',
-                                              ),
-                                            );
-                                          })
-                                          .toList(),
-                                ),
-                            const SizedBox(height: 16),
-                            const Divider(),
-                            const Text(
-                              'Vos points à améliorer (thèmes joués au moins 2 fois, taux de réussite < 70%) :',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            _themesPerformance.isEmpty
-                                ? const Text(
-                                  'Aucun thème analysé pour l\'instant.',
-                                )
-                                : Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children:
-                                      _themesPerformance.entries
-                                          .where((entry) {
-                                            int gamesPlayed =
-                                                (entry.value['gamesPlayed']
-                                                        as num?)
-                                                    ?.toInt() ??
-                                                0;
-                                            if (gamesPlayed < 2) return false;
-                                            double wsr =
-                                                (entry.value['weightedSuccessRate']
-                                                        as num?)
-                                                    ?.toDouble() ??
-                                                0.0;
-                                            return wsr < 0.7;
-                                          })
-                                          .map((entry) {
-                                            double wsr =
-                                                (entry.value['weightedSuccessRate']
-                                                        as num?)
-                                                    ?.toDouble() ??
-                                                0.0;
-                                            int gamesPlayed =
-                                                (entry.value['gamesPlayed']
-                                                        as num?)
-                                                    ?.toInt() ??
-                                                0;
-                                            return ListTile(
-                                              leading: const Icon(
-                                                Icons.warning,
-                                                color: Colors.orange,
-                                              ),
-                                              title: Text(entry.key),
-                                              subtitle: Text(
-                                                'Taux de réussite : ${(wsr * 100).toStringAsFixed(0)}% ($gamesPlayed quiz joués)',
-                                              ),
-                                            );
-                                          })
-                                          .toList(),
-                                ),
-                            const SizedBox(height: 16),
-                            const Divider(),
-                            const Text(
-                              'Thèmes non testés :',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            _untestedThemes.isEmpty
-                                ? const Text(
-                                  'Vous avez exploré tous les thèmes connus !',
-                                )
-                                : Wrap(
-                                  spacing: 8.0,
-                                  runSpacing: 4.0,
-                                  children:
-                                      _untestedThemes
-                                          .map(
-                                            (theme) => Chip(
-                                              avatar: const Icon(
-                                                Icons.new_releases,
-                                                color: Colors.blue,
-                                              ),
-                                              label: Text(theme),
-                                              backgroundColor:
-                                                  Colors.blue.shade100,
-                                            ),
-                                          )
-                                          .toList(),
-                                ),
-                          ],
-                        ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
               ),
+            );
+          }).toList(),
     );
   }
 }
@@ -7743,20 +8289,25 @@ class _FriendsPageState extends State<FriendsPage> {
           (userDoc.data()?['friends'] as List<dynamic>?)?.cast<String>() ?? [];
 
       List<Map<String, dynamic>> loadedFriends = [];
-      for (String friendUid in friendUids) {
-        final friendDoc =
+      if (friendUids.isNotEmpty) {
+        final chunks = friendUids.take(30).toList();
+        final friendsSnapshot =
             await FirebaseFirestore.instance
                 .collection('users')
-                .doc(friendUid)
+                .where(FieldPath.documentId, whereIn: chunks)
                 .get();
-        if (friendDoc.exists) {
-          loadedFriends.add({
-            'uid': friendDoc.id,
-            'username': friendDoc.data()?['username'],
-            'score': friendDoc.data()?['score'],
-            'iq': friendDoc.data()?['iq'],
-          });
-        }
+
+        loadedFriends =
+            friendsSnapshot.docs
+                .map(
+                  (doc) => {
+                    'uid': doc.id,
+                    'username': doc.data()['username'],
+                    'score': doc.data()['score'],
+                    'iq': doc.data()['iq'],
+                  },
+                )
+                .toList();
       }
 
       final requestsSnapshot =
@@ -7767,19 +8318,33 @@ class _FriendsPageState extends State<FriendsPage> {
               .get();
 
       List<Map<String, dynamic>> loadedRequests = [];
-      for (var doc in requestsSnapshot.docs) {
-        final senderUid = doc.data()['senderId'];
-        final senderDoc =
+      final senderUids =
+          requestsSnapshot.docs
+              .map((doc) => doc.data()['senderId']?.toString())
+              .whereType<String>()
+              .toList();
+
+      if (senderUids.isNotEmpty) {
+        final chunks = senderUids.take(30).toList();
+        final sendersSnapshot =
             await FirebaseFirestore.instance
                 .collection('users')
-                .doc(senderUid)
+                .where(FieldPath.documentId, whereIn: chunks)
                 .get();
-        if (senderDoc.exists) {
-          loadedRequests.add({
-            'id': doc.id,
-            'senderId': senderUid,
-            'senderName': senderDoc.data()?['username'],
-          });
+
+        final sendersMap = {
+          for (var doc in sendersSnapshot.docs) doc.id: doc.data()['username'],
+        };
+
+        for (var doc in requestsSnapshot.docs) {
+          final senderUid = doc.data()['senderId']?.toString();
+          if (senderUid != null && sendersMap.containsKey(senderUid)) {
+            loadedRequests.add({
+              'id': doc.id,
+              'senderId': senderUid,
+              'senderName': sendersMap[senderUid],
+            });
+          }
         }
       }
 
@@ -7890,28 +8455,10 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _acceptFriendRequest(String requestId, String senderId) async {
     try {
-      final batch = FirebaseFirestore.instance.batch();
-
-      batch.update(
-        FirebaseFirestore.instance.collection('friendRequests').doc(requestId),
-        {'status': 'accepted'},
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'respondToFriendRequest',
       );
-
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(senderId),
-        {
-          'friends': FieldValue.arrayUnion([widget.userId]),
-        },
-      );
-
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(widget.userId),
-        {
-          'friends': FieldValue.arrayUnion([senderId]),
-        },
-      );
-
-      await batch.commit();
+      await callable.call({'requestId': requestId, 'accept': true});
       _loadFriendsAndRequests();
       if (mounted)
         ScaffoldMessenger.of(context).showSnackBar(
@@ -7928,10 +8475,10 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _declineFriendRequest(String requestId) async {
     try {
-      await FirebaseFirestore.instance
-          .collection('friendRequests')
-          .doc(requestId)
-          .update({'status': 'declined'});
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'respondToFriendRequest',
+      );
+      await callable.call({'requestId': requestId, 'accept': false});
       _loadFriendsAndRequests();
       if (mounted)
         ScaffoldMessenger.of(
@@ -7948,40 +8495,15 @@ class _FriendsPageState extends State<FriendsPage> {
 
   Future<void> _removeFriend(String friendUid) async {
     try {
-      final batch = FirebaseFirestore.instance.batch();
-
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(widget.userId),
-        {
-          'friends': FieldValue.arrayRemove([friendUid]),
-        },
-      );
-
-      batch.update(
-        FirebaseFirestore.instance.collection('users').doc(friendUid),
-        {
-          'friends': FieldValue.arrayRemove([widget.userId]),
-        },
-      );
-
-      final requestsBetween =
-          await FirebaseFirestore.instance
-              .collection('friendRequests')
-              .where('senderId', whereIn: [widget.userId, friendUid])
-              .where('receiverId', whereIn: [widget.userId, friendUid])
-              .get();
-      for (var doc in requestsBetween.docs) {
-        batch.update(doc.reference, {'status': 'removed'});
-      }
-
-      await batch.commit();
+      final callable = FirebaseFunctions.instance.httpsCallable('removeFriend');
+      await callable.call({'friendUid': friendUid});
       _loadFriendsAndRequests();
       if (mounted)
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('Ami supprimé.')));
+        ).showSnackBar(const SnackBar(content: Text('Ami retiré.')));
     } catch (e) {
-      print('Erreur lors de la suppression d\'ami: $e');
+      print('Erreur lors du retrait de l\'ami: $e');
       if (mounted)
         ScaffoldMessenger.of(
           context,
@@ -8194,18 +8716,16 @@ class UserProfilePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+
     return Scaffold(
+      backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
       appBar: AppBar(
-        title: const Text('Profil du Joueur'),
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Colors.indigo, Colors.blueAccent],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-        ),
+        title: const Text('Profil'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        foregroundColor: isDark ? Colors.white : AppColors.deepBlue,
       ),
       body: FutureBuilder<DocumentSnapshot>(
         future:
@@ -8222,108 +8742,147 @@ class UserProfilePage extends StatelessWidget {
           final username = userData['username'] ?? 'Inconnu';
           final score = userData['score'] ?? 0;
           final iq = (userData['iq'] as num? ?? 100.0).toDouble();
-
-          // --- AJOUT BADGES ---
           final userBadges = List<String>.from(userData['badges'] ?? []);
 
           return SingleChildScrollView(
-            padding: const EdgeInsets.all(16.0),
+            padding: const EdgeInsets.all(16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Card(
-                  elevation: 4,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.person_pin,
-                          size: 60,
-                          color: Colors.indigo,
-                        ),
-                        const SizedBox(width: 16),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              username,
-                              style: const TextStyle(
-                                fontSize: 24,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                const Icon(Icons.star, color: Colors.amber),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'Score: $score',
-                                  style: const TextStyle(fontSize: 18),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 4),
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.lightbulb,
-                                  color: Colors.yellow.shade700,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'QI: ${iq.toStringAsFixed(0)}',
-                                  style: const TextStyle(fontSize: 18),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ],
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors:
+                          isDark
+                              ? [AppColors.deepBlue, AppColors.midnightSurface]
+                              : [AppColors.primaryBlue, AppColors.quizPurple],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
+                    borderRadius: BorderRadius.circular(24),
+                    boxShadow: [
+                      BoxShadow(
+                        color: primaryColor.withOpacity(0.3),
+                        blurRadius: 15,
+                        offset: const Offset(0, 8),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    children: [
+                      CircleAvatar(
+                        radius: 40,
+                        backgroundColor: Colors.white.withOpacity(0.2),
+                        child: Text(
+                          username[0].toUpperCase(),
+                          style: const TextStyle(
+                            fontSize: 32,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        username,
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          _buildStatItem(
+                            Icons.star_rounded,
+                            '$score',
+                            'Points',
+                            isDark,
+                          ),
+                          Container(
+                            height: 30,
+                            width: 1,
+                            color: Colors.white.withOpacity(0.3),
+                          ),
+                          _buildStatItem(
+                            Icons.psychology_alt_rounded,
+                            iq.toStringAsFixed(0),
+                            'QI',
+                            isDark,
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
-                // --- AJOUT DE LA SECTION BADGES SUR LE PROFIL ---
-                const SizedBox(height: 24),
-                const Text(
-                  'Badges du Joueur',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                const SizedBox(height: 30),
+                Text(
+                  'Collection de Badges',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : AppColors.deepBlue,
+                  ),
                 ),
-                const Divider(),
+                const SizedBox(height: 16),
                 AppBadges.buildBadgeGrid(userBadges),
-                // ------------------------------------------------
-                const SizedBox(height: 24),
-                const Text(
-                  'Quiz Publics Créés',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                const SizedBox(height: 30),
+                Text(
+                  'Créations Publiques',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: isDark ? Colors.white : AppColors.deepBlue,
+                  ),
                 ),
-                const Divider(),
-                StreamBuilder<QuerySnapshot>(
-                  stream:
+                const SizedBox(height: 16),
+                FutureBuilder<QuerySnapshot>(
+                  future:
                       FirebaseFirestore.instance
                           .collection('quizzes')
                           .where('userId', isEqualTo: userId)
                           .where('isPublic', isEqualTo: true)
                           .orderBy('timestamp', descending: true)
-                          .snapshots(),
+                          .limit(20)
+                          .get(),
                   builder: (context, quizSnapshot) {
                     if (quizSnapshot.connectionState ==
                         ConnectionState.waiting) {
-                      return const Center(child: CircularProgressIndicator());
-                    }
-                    if (!quizSnapshot.hasData ||
-                        quizSnapshot.data!.docs.isEmpty) {
                       return const Center(
-                        child: Text(
-                          'Cet utilisateur n\'a pas de quiz publics.',
+                        child: Padding(
+                          padding: EdgeInsets.all(20),
+                          child: CircularProgressIndicator(),
                         ),
                       );
                     }
-                    return ListView.builder(
+                    if (!quizSnapshot.hasData ||
+                        quizSnapshot.data!.docs.isEmpty) {
+                      return Container(
+                        padding: const EdgeInsets.all(20),
+                        decoration: BoxDecoration(
+                          color:
+                              isDark
+                                  ? AppColors.midnightSurface
+                                  : Colors.grey[100],
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Center(
+                          child: Text(
+                            'Aucun quiz public partagé.',
+                            style: TextStyle(fontStyle: FontStyle.italic),
+                          ),
+                        ),
+                      );
+                    }
+                    return ListView.separated(
                       shrinkWrap: true,
                       physics: const NeverScrollableScrollPhysics(),
                       itemCount: quizSnapshot.data!.docs.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 12),
                       itemBuilder: (context, index) {
                         final quizDoc = quizSnapshot.data!.docs[index];
                         final quizData = quizDoc.data() as Map<String, dynamic>;
@@ -8332,37 +8891,89 @@ class UserProfilePage extends StatelessWidget {
                                 ? '${quizData['text'].toString().substring(0, 50)}...'
                                 : quizData['text']?.toString() ?? '';
 
-                        return Card(
-                          child: ListTile(
-                            leading: const Icon(
-                              Icons.quiz,
-                              color: Colors.indigo,
-                            ),
-                            title: Text(
-                              'Thème: ${quizData['theme'] ?? 'Général'}',
-                            ),
-                            subtitle: Text(textPreview),
-                            trailing: const Icon(Icons.play_arrow),
-                            onTap: () {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text(
-                                    'La fonction "Jouer" depuis un profil sera bientôt disponible !',
-                                  ),
+                        return StyledCard(
+                          padding: const EdgeInsets.all(12),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color: primaryColor.withOpacity(0.1),
+                                  borderRadius: BorderRadius.circular(10),
                                 ),
-                              );
-                            },
+                                child: Icon(
+                                  Icons.quiz_rounded,
+                                  color: primaryColor,
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      quizData['theme'] ?? 'Général',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: primaryColor,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      textPreview,
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color:
+                                            isDark
+                                                ? Colors.white
+                                                : Colors.black87,
+                                      ),
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
                           ),
                         );
                       },
                     );
                   },
                 ),
+                const SizedBox(height: 20),
               ],
             ),
           );
         },
       ),
+    );
+  }
+
+  Widget _buildStatItem(
+    IconData icon,
+    String value,
+    String label,
+    bool isDark,
+  ) {
+    return Column(
+      children: [
+        Icon(icon, color: Colors.white, size: 20),
+        const SizedBox(height: 4),
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
+        Text(
+          label,
+          style: TextStyle(fontSize: 12, color: Colors.white.withOpacity(0.7)),
+        ),
+      ],
     );
   }
 }
@@ -9395,6 +10006,8 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
   Map<String, dynamic> _players = {};
   bool _isMounted = false;
   Timer? _countdownTimer;
+  Timer? _heartbeatTimer;
+  Stopwatch? _countdownStopwatch;
   int _countdown = 10;
   Map<String, dynamic>? _roomData;
   bool _gameStarted = false; // Verrou pour éviter la navigation double
@@ -9405,6 +10018,17 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
     _isMounted = true;
     WidgetsBinding.instance.addObserver(this);
     _listenToRoom();
+
+    if (widget.isHost) {
+      _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+        if (_isMounted) {
+          FirebaseFirestore.instance
+              .collection('onlineRooms')
+              .doc(widget.roomId)
+              .update({'lastHeartbeat': FieldValue.serverTimestamp()});
+        }
+      });
+    }
   }
 
   void _listenToRoom() {
@@ -9474,13 +10098,11 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
               return;
             }
 
-            // Gestion du compte à rebours synchronisé via Firestore
+            // Gestion du compte à rebours synchronisé via Stopwatch local (insensible à la manipulation d'horloge)
             if (data.containsKey('countdownStartTime')) {
-              final startTime =
-                  (data['countdownStartTime'] as Timestamp).toDate();
-              final secondsPassed =
-                  DateTime.now().difference(startTime).inSeconds;
-              final newCountdown = max(0, 10 - secondsPassed);
+              _countdownStopwatch ??= Stopwatch()..start();
+              final elapsedSeconds = _countdownStopwatch!.elapsed.inSeconds;
+              final newCountdown = max(0, 10 - elapsedSeconds);
 
               if (mounted)
                 setState(() {
@@ -9494,6 +10116,8 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 _startGame();
               }
             } else {
+              _countdownStopwatch?.stop();
+              _countdownStopwatch = null;
               if (mounted)
                 setState(() {
                   _countdown = 10;
@@ -9609,6 +10233,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
 
   @override
   void dispose() {
+    _heartbeatTimer?.cancel();
     _isMounted = false;
     WidgetsBinding.instance.removeObserver(this);
     _roomSubscription.cancel();
@@ -9631,12 +10256,10 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
             .doc(widget.roomId)
             .update({'active': false});
       } else {
-        FirebaseFirestore.instance
-            .collection('onlineRooms')
-            .doc(widget.roomId)
-            .update({
-              FieldPath(['players', widget.playerName]): FieldValue.delete(),
-            });
+        // Pour les non-hôtes, le Heartbeat et la détection de déconnexion gèrent le départ proprement sans enfreindre les règles Firestore.
+        FirebaseFunctions.instance.httpsCallable('abandonOnlineGame').call({
+          'roomId': widget.roomId,
+        });
       }
     } catch (e) {
       // Échec silencieux, le Heartbeat fera le travail de toute façon.
@@ -9662,6 +10285,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
 
   void _leaveRoom() async {
     _roomSubscription.cancel();
+    final uid = FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
     if (widget.isHost) {
       await FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -9671,9 +10295,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
       await FirebaseFirestore.instance
           .collection('onlineRooms')
           .doc(widget.roomId)
-          .update({
-            FieldPath(['players', widget.playerName]): FieldValue.delete(),
-          });
+          .update({'players.$uid': FieldValue.delete()});
     }
     if (mounted) Navigator.of(context).pop();
   }
@@ -9762,9 +10384,10 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                   child: ListView(
                     children:
                         _players.entries.map((entry) {
-                          final playerName = entry.key;
                           final playerData =
                               entry.value as Map<String, dynamic>;
+                          final playerName =
+                              playerData['name']?.toString() ?? entry.key;
                           return ListTile(
                             leading: const Icon(Icons.person),
                             title: Text(
@@ -9926,12 +10549,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             .doc(widget.roomId)
             .update({'active': false});
       } else {
-        FirebaseFirestore.instance
-            .collection('onlineRooms')
-            .doc(widget.roomId)
-            .update({
-              FieldPath(['players', widget.playerName]): FieldValue.delete(),
-            });
+        // Pour les non-hôtes, le Heartbeat et la détection de déconnexion gèrent le départ proprement sans enfreindre les règles Firestore.
+        FirebaseFunctions.instance.httpsCallable('abandonOnlineGame').call({
+          'roomId': widget.roomId,
+        });
       }
     } catch (e) {
       // Échec silencieux, le Heartbeat fera le travail de toute façon.
@@ -10169,69 +10790,67 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       }
 
       if (_remainingTime.value > 0) {
-        _startTimer();
+        _syncTimerWithServerTimestamp(_gameState, _remainingTime.value);
       }
     } else {
       _remainingTime.value = 0;
     }
   }
 
-  void _startTimer() {
-    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
-      if (!_isMounted) {
+  Future<void> _submitAnswer(dynamic userAnswer) async {
+    if (_localAnswerSubmitted) return;
+    setState(() => _localAnswerSubmitted = true);
+
+    try {
+      final callable = FirebaseFunctions.instance.httpsCallable(
+        'verifyOnlineAnswer',
+      );
+      final result = await callable.call({
+        'roomId': widget.roomId,
+        'userAnswer': userAnswer,
+        'questionIndex': _gameState['currentGameIndex'] ?? 0,
+      });
+
+      final isCorrect = result.data['isCorrect'] == true;
+      final points = result.data['pointsEarned'] ?? 0;
+
+      if (mounted) {
+        setState(() {
+          _feedback =
+              isCorrect
+                  ? 'Bonne réponse ! (+$points pts)'
+                  : 'Mauvaise réponse...';
+        });
+      }
+    } catch (e) {
+      if (mounted) setState(() => _feedback = 'Erreur lors de la validation.');
+    }
+  }
+
+  void _syncTimerWithServerTimestamp(
+    Map<String, dynamic> gameState,
+    int totalDuration,
+  ) {
+    final startTimeStamp = gameState['questionStartTime'] as Timestamp?;
+    if (startTimeStamp == null) return;
+
+    _timer?.cancel();
+
+    _timer = Timer.periodic(const Duration(milliseconds: 500), (timer) {
+      if (!mounted) {
         timer.cancel();
         return;
       }
-      if (_remainingTime.value > 0) {
-        if (mounted) {
-          _remainingTime.value--;
-        }
-      } else {
+      final now = DateTime.now();
+      final elapsed = now.difference(startTimeStamp.toDate()).inSeconds;
+      final remaining = max(0, totalDuration - elapsed);
+
+      _remainingTime.value = remaining;
+
+      if (remaining <= 0) {
         timer.cancel();
-
-        final currentIndex = _gameState['currentGameIndex'] as int? ?? 0;
-        if (currentIndex >= _games.length) return;
-        final gameType = _games[currentIndex]['type'] as String? ?? '';
-
-        // Soumettre automatiquement si non soumis (jeux standards)
-        if (!_localAnswerSubmitted &&
-            !gameType.contains('Memory') &&
-            !gameType.contains('Pendu') &&
-            !gameType.contains('Relier') &&
-            !gameType.contains('Mot Mystère') &&
-            !gameType.contains('Mot Mystere') &&
-            !gameType.contains('Estimation')) {
-          _submitAnswer('', isCorrect: false);
-        } else if (gameType.contains('Relier') && !_isMatchSubmitted) {
-          _submitMatches();
-        }
-
-        // L'hôte vérifie si on peut passer à la suite
-        if (widget.isHost && !_isAdvancing) {
-          final playersAnswered =
-              (_gameState['playersAnswered'] as List<dynamic>?) ?? [];
-          // Considérer seulement les joueurs actifs (présents dans la room)
-          final activePlayers = _players.keys.toList();
-          bool allAnswered = activePlayers.every(
-            (p) => playersAnswered.contains(p),
-          );
-
-          if (_settings?.waitForAllPlayers == false || allAnswered) {
-            FirebaseFirestore.instance
-                .collection('onlineRooms')
-                .doc(widget.roomId)
-                .update({'gameState.canGoToNextQuestion': true});
-          } else {
-            // Attendre encore un peu (5s max) pour les retardataires
-            Future.delayed(const Duration(seconds: 5), () {
-              if (_isMounted && !_isAdvancing && widget.isHost) {
-                FirebaseFirestore.instance
-                    .collection('onlineRooms')
-                    .doc(widget.roomId)
-                    .update({'gameState.canGoToNextQuestion': true});
-              }
-            });
-          }
+        if (!_localAnswerSubmitted) {
+          _submitAnswer(''); // Soumission par défaut à expiration
         }
       }
     });
@@ -10255,57 +10874,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       } else {
         _goToNextQuestion();
       }
-    });
-  }
-
-  Future<void> _submitAnswer(
-    String? userAnswer, {
-    required bool isCorrect,
-  }) async {
-    if (_localAnswerSubmitted) return;
-    setState(() {
-      _localAnswerSubmitted = true;
-      if (_settings?.showAnswerPolicy == 'immediate') {
-        _feedback =
-            isCorrect
-                ? 'Bonne réponse !' + (_gameHintVisible ? ' (+5 pts)' : '')
-                : 'Mauvaise réponse...';
-      } else {
-        _feedback = 'Réponse enregistrée !';
-      }
-    });
-
-    await FirebaseFirestore.instance.runTransaction((transaction) async {
-      final roomRef = FirebaseFirestore.instance
-          .collection('onlineRooms')
-          .doc(widget.roomId);
-      DocumentSnapshot snapshot = await transaction.get(roomRef);
-      if (!snapshot.exists) return;
-
-      var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
-      var playersAnswered = List<dynamic>.from(
-        gameState['playersAnswered'] ?? [],
-      );
-
-      if (isCorrect) {
-        int pointsToAdd = _gameHintVisible ? 5 : 10;
-        players[widget.playerName]['score'] =
-            (players[widget.playerName]['score'] ?? 0) + pointsToAdd;
-      }
-
-      if (!playersAnswered.contains(widget.playerName)) {
-        playersAnswered.add(widget.playerName);
-      }
-      gameState['playersAnswered'] = playersAnswered;
-
-      if (_settings?.waitForAllPlayers == true &&
-          playersAnswered.length >= players.length) {
-        gameState['canGoToNextQuestion'] = true;
-      }
-
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
     });
   }
 
@@ -10337,30 +10905,23 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       final roomRef = FirebaseFirestore.instance
           .collection('onlineRooms')
           .doc(widget.roomId);
-      DocumentSnapshot snapshot = await transaction.get(roomRef);
+      final snapshot = await transaction.get(roomRef);
       if (!snapshot.exists) return;
-
       var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
-      var playersAnswered = List<dynamic>.from(
-        gameState['playersAnswered'] ?? [],
-      );
+      var players = Map<String, dynamic>.from(data['players'] ?? {});
 
-      players[widget.playerName]['score'] =
-          (players[widget.playerName]['score'] ?? 0) + points;
+      final String playerUid =
+          FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+      final playerKey =
+          players.containsKey(playerUid) ? playerUid : widget.playerName;
 
-      if (!playersAnswered.contains(widget.playerName)) {
-        playersAnswered.add(widget.playerName);
-      }
-      gameState['playersAnswered'] = playersAnswered;
-
-      if (_settings?.waitForAllPlayers == true &&
-          playersAnswered.length >= players.length) {
-        gameState['canGoToNextQuestion'] = true;
-      }
-
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
+      transaction.update(roomRef, {
+        'players.$playerKey.score': FieldValue.increment(points),
+        'gameState.playersAnswered': FieldValue.arrayUnion([
+          playerKey,
+          widget.playerName,
+        ]),
+      });
     });
   }
 
@@ -10400,7 +10961,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     _roomSubscription.cancel();
     _timer?.cancel();
     final scores = {
-      for (var p in finalPlayers.entries) p.key: (p.value['score'] ?? 0) as int,
+      for (var p in finalPlayers.entries)
+        (p.value is Map && p.value['name'] != null)
+                ? p.value['name'].toString()
+                : p.key:
+            ((p.value is Map ? p.value['score'] : p.value) ?? 0) as int,
     };
     Navigator.pushReplacement(
       context,
@@ -10420,28 +10985,30 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
   void _initializeHangmanInFirestore() async {
     if (!widget.isHost) return;
+    if (_players.isEmpty) return;
 
-    final playersList = _players.keys.toList();
-    if (playersList.isEmpty) return;
-
+    final firstPlayerUid = _players.keys.first;
     final game = _games[_gameState['currentGameIndex']];
-    final word = (game['word']?.toString() ?? '').toUpperCase();
+    final secretWord = game['word']?.toString() ?? '';
 
     await FirebaseFirestore.instance
         .collection('onlineRooms')
         .doc(widget.roomId)
         .update({
           'gameState.hangmanState': {
-            'currentPlayerName': playersList.first,
+            'currentPlayerName': firstPlayerUid,
             'usedLetters': [],
             'mistakes': 0,
             'gameOver': false,
-            'wordToGuess': word,
+            'wordToGuess': secretWord,
           },
         });
   }
 
   Future<void> _guessLetterOnline(String letter) async {
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -10450,17 +11017,20 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (!snapshot.exists) return;
 
       var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
+      var players = Map<String, dynamic>.from(data['players'] ?? {});
+      var gameState = Map<String, dynamic>.from(data['gameState'] ?? {});
       var hState = Map<String, dynamic>.from(gameState['hangmanState'] ?? {});
 
+      final playerKey =
+          players.containsKey(playerUid) ? playerUid : widget.playerName;
+
       if (hState['gameOver'] == true ||
-          hState['currentPlayerName'] != widget.playerName)
+          hState['currentPlayerName'] != playerUid)
         return;
 
       var usedLetters = List<String>.from(hState['usedLetters'] ?? []);
       int mistakes = hState['mistakes'] ?? 0;
-      final word = (hState['wordToGuess']?.toString() ?? '').toUpperCase();
+      final word = _decodeWordSecret(hState['wordToGuess']?.toString());
       final currentPlayerName = hState['currentPlayerName'];
 
       if (usedLetters.contains(letter)) return;
@@ -10480,24 +11050,26 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       if (isWordGuessed) {
         hState['gameOver'] = true;
-        if (players.containsKey(currentPlayerName) &&
-            players[currentPlayerName] != null) {
-          players[currentPlayerName]['score'] =
-              (players[currentPlayerName]['score'] ?? 0) + 20;
-        }
+        transaction.update(roomRef, {
+          'players.$playerKey.score': FieldValue.increment(20),
+        });
       } else if (mistakes >= 6) {
         hState['gameOver'] = true;
       }
 
-      final playerNames = players.keys.toList();
-      final currentIndex = playerNames.indexOf(currentPlayerName);
-      final nextIndex = (currentIndex + 1) % playerNames.length;
+      // Trier les UIDs pour garantir un ordre d'itération identique sur tous les clients
+      final playerKeys = players.keys.toList()..sort();
+      final currentIndex = playerKeys.indexOf(playerKey);
+      final nextIndex =
+          (currentIndex >= 0 && playerKeys.isNotEmpty)
+              ? (currentIndex + 1) % playerKeys.length
+              : 0;
 
       // Mise à jour propre de l'objet global
       hState['usedLetters'] = usedLetters;
       hState['mistakes'] = mistakes;
       if (hState['gameOver'] != true) {
-        hState['currentPlayerName'] = playerNames[nextIndex];
+        hState['currentPlayerName'] = playerKeys[nextIndex];
       }
 
       gameState['hangmanState'] = hState;
@@ -10505,7 +11077,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         gameState['canGoToNextQuestion'] = true;
       }
 
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
+      transaction.update(roomRef, {'gameState': gameState});
     });
   }
 
@@ -10570,7 +11142,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     }
     initialCards.shuffle();
 
-    final playersList = _players.keys.toList();
+    final firstPlayerKey = _players.keys.first;
 
     await FirebaseFirestore.instance
         .collection('onlineRooms')
@@ -10580,7 +11152,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             'cards': initialCards,
             'flipped': [], // Gardé par sécurité
             'playerFlipped': {}, // <-- NOUVEAU: Suivi indépendant par joueur
-            'currentPlayerName': playersList.first,
+            'currentPlayerName': firstPlayerKey,
             'gameOver': false,
             'status': 'playing',
           },
@@ -10597,7 +11169,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     }
 
     final settings = _settings!;
-    final isMyTurn = memoryState['currentPlayerName'] == widget.playerName;
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+    final isMyTurn = memoryState['currentPlayerName'] == playerUid;
 
     if (settings.memoryMode == 'turnBased' &&
         (!isMyTurn || memoryState['status'] == 'checking'))
@@ -10618,7 +11192,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (!snapshot.exists) return;
 
       var data = snapshot.data() as Map<String, dynamic>;
-      var gameState = Map<String, dynamic>.from(data['gameState']);
+      var gameState = Map<String, dynamic>.from(data['gameState'] ?? {});
       var mState = Map<String, dynamic>.from(gameState['memoryState'] ?? {});
       List<dynamic> currentCards = List<dynamic>.from(mState['cards']);
 
@@ -10626,9 +11200,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       var playerFlipped = Map<String, dynamic>.from(
         mState['playerFlipped'] ?? {},
       );
-      List<int> myFlipped = List<int>.from(
-        playerFlipped[widget.playerName] ?? [],
-      );
+      List<int> myFlipped = List<int>.from(playerFlipped[playerUid] ?? []);
 
       if (myFlipped.length >= 2) return; // Sécurité anti-spam
       if (currentCards[index]['flipped'] == true ||
@@ -10646,7 +11218,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         }
       }
 
-      playerFlipped[widget.playerName] = myFlipped;
+      playerFlipped[playerUid] = myFlipped;
       mState['playerFlipped'] = playerFlipped;
       mState['cards'] = currentCards;
       gameState['memoryState'] = mState;
@@ -10667,6 +11239,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     await Future.delayed(const Duration(milliseconds: 600));
     if (!_isMounted) return;
 
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
     await FirebaseFirestore.instance.runTransaction((transaction) async {
       final roomRef = FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -10675,17 +11250,15 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (!snapshot.exists) return;
 
       var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
+      var players = Map<String, dynamic>.from(data['players'] ?? {});
+      var gameState = Map<String, dynamic>.from(data['gameState'] ?? {});
       var mState = Map<String, dynamic>.from(gameState['memoryState'] ?? {});
       List<dynamic> currentCards = List<dynamic>.from(mState['cards']);
 
       var playerFlipped = Map<String, dynamic>.from(
         mState['playerFlipped'] ?? {},
       );
-      List<int> myFlipped = List<int>.from(
-        playerFlipped[widget.playerName] ?? [],
-      );
+      List<int> myFlipped = List<int>.from(playerFlipped[playerUid] ?? []);
       String currentPlayerName = mState['currentPlayerName'];
 
       if (myFlipped.length != 2) return;
@@ -10706,7 +11279,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       );
 
       if (card1['matched'] == true || card2['matched'] == true) {
-        playerFlipped[widget.playerName] = [];
+        playerFlipped[playerUid] = [];
         mState['playerFlipped'] = playerFlipped;
         gameState['memoryState'] = mState;
         transaction.update(roomRef, {'gameState': gameState});
@@ -10716,22 +11289,20 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (card1['id'] == card2['id']) {
         currentCards[card1Index]['matched'] = true;
         currentCards[card2Index]['matched'] = true;
-        if (players.containsKey(widget.playerName) &&
-            players[widget.playerName] != null) {
-          players[widget.playerName]['score'] =
-              (players[widget.playerName]['score'] ?? 0) + 15;
-        }
+        transaction.update(roomRef, {
+          'players.$playerUid.score': FieldValue.increment(15),
+        });
       } else {
         currentCards[card1Index]['flipped'] = false;
         currentCards[card2Index]['flipped'] = false;
 
         // On passe le tour seulement en tour par tour ET si c'est bien à ce joueur de jouer
         if (_settings?.memoryMode == 'turnBased' &&
-            currentPlayerName == widget.playerName) {
-          final playerNames = players.keys.toList();
-          final currentIndex = playerNames.indexOf(currentPlayerName);
-          final nextIndex = (currentIndex + 1) % playerNames.length;
-          mState['currentPlayerName'] = playerNames[nextIndex];
+            currentPlayerName == playerUid) {
+          final playerKeys = players.keys.toList();
+          final currentIndex = playerKeys.indexOf(playerUid);
+          final nextIndex = (currentIndex + 1) % playerKeys.length;
+          mState['currentPlayerName'] = playerKeys[nextIndex];
         }
       }
 
@@ -10742,7 +11313,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       }
 
       // Réinitialise uniquement les cartes de CE joueur
-      playerFlipped[widget.playerName] = [];
+      playerFlipped[playerUid] = [];
       mState['playerFlipped'] = playerFlipped;
       mState['cards'] = currentCards;
 
@@ -10752,7 +11323,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       gameState['memoryState'] = mState;
 
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
+      transaction.update(roomRef, {'gameState': gameState});
     });
   }
 
@@ -10792,25 +11363,22 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   void _initializeMotMystereInFirestore() async {
     if (!widget.isHost) return;
 
-    final playersList = _players.keys.toList();
-    if (playersList.isEmpty) return;
+    final firstPlayerKey = _players.keys.first;
 
     final game = _games[_gameState['currentGameIndex']];
-    final word = (game['word'] as String? ?? 'DEFAULT').toUpperCase();
+    final secretWord = game['word']?.toString() ?? '';
 
     await FirebaseFirestore.instance
         .collection('onlineRooms')
         .doc(widget.roomId)
         .update({
           'gameState.motMystereState': {
-            'currentPlayerName': playersList.first,
+            'currentPlayerName': firstPlayerKey,
             'guesses': {},
             'gameOver': false,
-            'wordToGuess': word,
+            'wordToGuess': secretWord,
             'maxGuesses':
-                (word.length + 1) *
-                playersList
-                    .length, // <-- NOUVEAU: Sauvegarder la limite absolue
+                (_decodeWordSecret(secretWord).length + 1) * _players.length,
           },
         });
   }
@@ -10819,9 +11387,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   Future<void> _submitMotMystereGuess(String guess) async {
     final motMystereState =
         _gameState['motMystereState'] as Map<String, dynamic>?;
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
     if (motMystereState == null ||
         motMystereState['gameOver'] == true ||
-        motMystereState['currentPlayerName'] != widget.playerName)
+        motMystereState['currentPlayerName'] != playerUid)
       return;
 
     await FirebaseFirestore.instance.runTransaction((transaction) async {
@@ -10832,8 +11403,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (!snapshot.exists) return;
 
       var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
+      var players = Map<String, dynamic>.from(data['players'] ?? {});
+      var gameState = Map<String, dynamic>.from(data['gameState'] ?? {});
       var mmState = Map<String, dynamic>.from(
         gameState['motMystereState'] ?? {},
       );
@@ -10841,14 +11412,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       final wordToGuess =
           (mmState['wordToGuess']?.toString() ?? '').toUpperCase();
-      final currentPlayerName = mmState['currentPlayerName'];
 
       // Ajoute la tentative à la liste du joueur
-      List<String> playerGuesses = List<String>.from(
-        guesses[currentPlayerName] ?? [],
-      );
+      List<String> playerGuesses = List<String>.from(guesses[playerUid] ?? []);
       playerGuesses.add(guess.toUpperCase());
-      guesses[currentPlayerName] = playerGuesses;
+      guesses[playerUid] = playerGuesses;
 
       bool isWordGuessed = guess.toUpperCase() == wordToGuess;
       int totalGuesses = 0;
@@ -10860,26 +11428,28 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       if (isWordGuessed) {
         mmState['gameOver'] = true;
-        if (players.containsKey(currentPlayerName) &&
-            players[currentPlayerName] != null) {
-          players[currentPlayerName]['score'] =
-              (players[currentPlayerName]['score'] ?? 0) + 25;
-        }
+        transaction.update(roomRef, {
+          'players.$playerUid.score': FieldValue.increment(25),
+        });
       } else if (totalGuesses >= maxGuesses) {
         mmState['gameOver'] = true;
       }
 
       // Passe au joueur suivant
-      final playerNames = players.keys.toList();
-      final currentIndex = playerNames.indexOf(currentPlayerName);
-      final nextIndex = (currentIndex + 1) % playerNames.length;
-      mmState['currentPlayerName'] = playerNames[nextIndex];
+      // Trier les UIDs pour éviter les sauts de joueurs
+      final playerKeys = players.keys.toList()..sort();
+      final currentIndex = playerKeys.indexOf(playerUid);
+      final nextIndex =
+          (currentIndex >= 0 && playerKeys.isNotEmpty)
+              ? (currentIndex + 1) % playerKeys.length
+              : 0;
+      mmState['currentPlayerName'] = playerKeys[nextIndex];
 
       mmState['guesses'] = guesses;
       if (mmState['gameOver'] == true) gameState['canGoToNextQuestion'] = true;
       gameState['motMystereState'] = mmState;
 
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
+      transaction.update(roomRef, {'gameState': gameState});
     });
   }
 
@@ -11000,6 +11570,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     _roomSubscription.cancel();
     _timer?.cancel();
 
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
     // 1. D'ABORD sanctionner l'abandon auprès de la Cloud Function
     try {
       final callable = FirebaseFunctions.instance.httpsCallable(
@@ -11021,9 +11594,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         await FirebaseFirestore.instance
             .collection('onlineRooms')
             .doc(widget.roomId)
-            .update({
-              FieldPath(['players', widget.playerName]): FieldValue.delete(),
-            });
+            .update({'players.$playerUid': FieldValue.delete()});
         await _checkIfAllRemainingPlayersAnsweredAfterLeave();
       }
     } catch (e) {
@@ -11237,33 +11808,51 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     String correctAnswerText = 'Information non disponible.';
 
     try {
-      if (gameType.contains('Vrai ou Faux'))
-        correctAnswerText = game['answer'] ? 'Vrai' : 'Faux';
-      else if (gameType.contains('QCM'))
-        correctAnswerText = game['correct'];
-      else if (gameType.contains('Choisir l\'Intrus'))
-        correctAnswerText = game['intruder'];
-      else if (gameType.contains('Compléter la Phrase') ||
-          gameType.contains('Quiz par Indices'))
-        correctAnswerText = game['correct'] ?? game['answer'] ?? '';
-      else if (gameType.contains('Deux Vérités'))
-        correctAnswerText = game['lie'];
-      else if (gameType == 'Qui suis-je ?')
-        correctAnswerText = game['answer'];
-      else if (gameType == 'Le Mot Anagramme')
-        correctAnswerText = game['solution'];
-      else if (gameType.contains('Chronologie') ||
-          gameType.contains('Quiz Éclair'))
+      if (gameType.contains('Vrai ou Faux')) {
+        final decoded =
+            _decodeWordSecret(game['answer']?.toString()).toLowerCase();
+        final isTrue = decoded == 'true' || game['answer'] == true;
+        correctAnswerText = isTrue ? 'Vrai' : 'Faux';
+      } else if (gameType.contains('QCM')) {
+        final rawCorrect = _decodeWordSecret(game['correct']?.toString());
+        final opts = List<dynamic>.from(game['options'] ?? []);
+        final idx = int.tryParse(rawCorrect);
         correctAnswerText =
-            game['correct'] ??
-            (game['events'] as List<dynamic>?)?.join(' -> ') ??
-            '';
-      else if (gameType.contains('Pendu'))
-        correctAnswerText = game['word'];
-      else if (gameType.contains('Mot Mystère'))
-        correctAnswerText = game['word'];
-      else if (gameType.contains('Estimation')) {
-        final ans = (game['answer'] as num?)?.toDouble() ?? 0;
+            (idx != null && idx >= 0 && idx < opts.length)
+                ? ((opts[idx] is Map ? opts[idx]['text'] : opts[idx])
+                        ?.toString() ??
+                    rawCorrect)
+                : rawCorrect;
+      } else if (gameType.contains('Choisir l\'Intrus')) {
+        correctAnswerText = _decodeWordSecret(game['intruder']?.toString());
+      } else if (gameType.contains('Compléter la Phrase') ||
+          gameType.contains('Quiz par Indices')) {
+        correctAnswerText = _decodeWordSecret(
+          (game['correct'] ?? game['answer'])?.toString(),
+        );
+      } else if (gameType.contains('Deux Vérités')) {
+        correctAnswerText = _decodeWordSecret(game['lie']?.toString());
+      } else if (gameType == 'Qui suis-je ?') {
+        correctAnswerText = _decodeWordSecret(game['answer']?.toString());
+      } else if (gameType == 'Le Mot Anagramme') {
+        correctAnswerText = _decodeWordSecret(game['solution']?.toString());
+      } else if (gameType.contains('Chronologie') ||
+          gameType.contains('Quiz Éclair')) {
+        correctAnswerText = _decodeWordSecret(
+          game['correct']?.toString() ?? game['answer']?.toString(),
+        );
+        if (correctAnswerText.isEmpty) {
+          correctAnswerText =
+              (game['events'] as List<dynamic>?)?.join(' -> ') ?? '';
+        }
+      } else if (gameType.contains('Pendu') ||
+          gameType.contains('Mot Mystère')) {
+        correctAnswerText = _decodeWordSecret(game['word']?.toString());
+      } else if (gameType.contains('Estimation')) {
+        final rawAns = _decodeWordSecret(game['answer']?.toString());
+        final ans =
+            double.tryParse(rawAns) ??
+            ((game['answer'] as num?)?.toDouble() ?? 0);
         final unit = game['unit']?.toString() ?? '';
         correctAnswerText =
             '${ans.toStringAsFixed(ans.truncateToDouble() == ans ? 0 : 2)} ${unit}';
@@ -11342,10 +11931,14 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         ),
         const SizedBox(height: 16),
         ...sortedPlayers.map((entry) {
+          final pName =
+              (entry.value is Map && entry.value['name'] != null)
+                  ? entry.value['name'].toString()
+                  : entry.key;
           return Card(
             child: ListTile(
               leading: Text('#${sortedPlayers.indexOf(entry) + 1}'),
-              title: Text(entry.key),
+              title: Text(pName),
               trailing: Text(
                 '${entry.value['score']} points',
                 style: const TextStyle(fontWeight: FontWeight.bold),
@@ -11437,10 +12030,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                   break;
                 }
               }
-              _submitAnswer(
-                _chronologyEvents!.join(' -> '),
-                isCorrect: isCorrect,
-              );
+              _submitAnswer(_chronologyEvents!.join(' -> '));
             },
             child: const Text('Valider l\'ordre'),
           ),
@@ -11455,9 +12045,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
     if (gameType == 'Qui suis-je ?') {
       questionText = game['riddle']?.toString() ?? 'Devinette non trouvée.';
-      correctAnswer = game['answer']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['answer']?.toString());
     } else if (gameType == 'Le Mot Anagramme') {
-      String solution = game['solution']?.toString() ?? '';
+      String solution = _decodeWordSecret(game['solution']?.toString());
       String defaultAnagram = game['anagram']?.toString() ?? '';
 
       if (_gameState['currentGameIndex'] != _currentAnagramIndex) {
@@ -11486,12 +12076,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       correctAnswer = solution;
     } else if (gameType == 'Compléter la Phrase') {
       questionText = game['question']?.toString() ?? 'Phrase non trouvée';
-      correctAnswer = game['correct']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['correct']?.toString());
     } else if (gameType == 'Quiz par Indices') {
       final clues =
           (game['clues'] as List?)?.join('\n') ?? 'Indices non trouvés.';
       questionText = "Trouvez la réponse avec ces indices :\n$clues";
-      correctAnswer = game['answer']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['answer']?.toString());
     }
 
     return Column(
@@ -11527,7 +12117,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                     final isCorrect =
                         userAnswer.trim().toLowerCase() ==
                         correctAnswer.trim().toLowerCase();
-                    _submitAnswer(userAnswer, isCorrect: isCorrect);
+                    _submitAnswer(userAnswer);
                   },
           child: const Text('Valider'),
         ),
@@ -11550,10 +12140,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
     if (gameType.contains('Vrai ou Faux')) {
       options = ['True', 'False'];
-      correctAnswer = game['answer'].toString();
+      correctAnswer = _decodeWordSecret(game['answer']?.toString());
     } else if (gameType.contains('QCM')) {
       options = List<dynamic>.from(game['options'] ?? []);
-      final rawCorrect = game['correct']?.toString() ?? '';
+      final rawCorrect = _decodeWordSecret(game['correct']?.toString());
       final qcmIdx = int.tryParse(rawCorrect);
       correctAnswer =
           (qcmIdx != null && qcmIdx >= 0 && qcmIdx < options.length)
@@ -11565,38 +12155,42 @@ class _OnlineGamePageState extends State<OnlineGamePage>
               : rawCorrect;
     } else if (gameType.contains('Choisir l\'Intrus')) {
       options = List<dynamic>.from(game['options'] ?? []);
-      correctAnswer = game['intruder']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['intruder']?.toString());
     } else if (gameType.contains('Deux Vérités') ||
         gameType.contains('Deux Vérités')) {
       options = List<dynamic>.from(game['statements'] ?? []);
-      correctAnswer = game['lie']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['lie']?.toString());
     } else if (gameType.contains('Quiz Éclair') ||
         gameType.contains('Quiz Eclair')) {
       options = List<dynamic>.from(
         game['choices'] ?? game['options'] ?? ['Vrai', 'Faux', 'Peut-Être'],
       );
-      correctAnswer =
-          game['correct']?.toString() ?? game['answer']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(
+        game['correct']?.toString() ?? game['answer']?.toString(),
+      );
     }
+
+    final qImageUrl = questionData['image_url'] ?? game['image_url'];
+    final qText = questionData['text']?.toString() ?? '';
 
     Widget questionWidget = Column(
       children: [
-        if (_settings!.qcmQuestionMode != DisplayMode.text &&
-            questionData['image_url'] != null)
+        if (_settings!.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 8.0),
             child: Image.network(
-              questionData['image_url'],
+              qImageUrl,
               height: 150,
               fit: BoxFit.contain,
               errorBuilder:
                   (context, error, stack) => Icon(Icons.broken_image, size: 50),
             ),
           ),
-        if (_settings!.qcmQuestionMode != DisplayMode.image &&
-            questionData['text'] != null)
+        if ((_settings!.qcmQuestionMode != DisplayMode.image ||
+                qImageUrl == null) &&
+            qText.isNotEmpty)
           Text(
-            questionData['text'],
+            qText,
             style: const TextStyle(fontSize: 18),
             textAlign: TextAlign.center,
           ),
@@ -11622,58 +12216,52 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             valueToCompare = optionText;
           }
 
-          Widget optionContent = Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (_settings!.qcmAnswerMode != DisplayMode.text &&
-                  imageUrl != null)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(4.0),
-                    child: Image.network(
-                      imageUrl,
-                      fit: BoxFit.contain,
-                      errorBuilder:
-                          (context, error, stack) =>
-                              Center(child: Icon(Icons.broken_image, size: 40)),
-                      loadingBuilder:
-                          (context, child, progress) =>
-                              progress == null
-                                  ? child
-                                  : Center(child: CircularProgressIndicator()),
-                    ),
-                  ),
-                ),
-              if (_settings!.qcmAnswerMode != DisplayMode.image &&
-                  optionText.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Text(
-                    optionText,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-          );
+          final bool showImage =
+              _settings!.qcmAnswerMode != DisplayMode.text && imageUrl != null;
+          final bool showText =
+              (_settings!.qcmAnswerMode != DisplayMode.image ||
+                  imageUrl == null) &&
+              optionText.isNotEmpty;
 
-          return SizedBox(
-            height: _settings!.qcmAnswerMode == DisplayMode.text ? 60 : 150,
+          return Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            constraints: BoxConstraints(
+              minHeight: (showImage && showText) ? 120 : (showImage ? 90 : 56),
+            ),
             child: Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
-                onTap:
-                    _localAnswerSubmitted
-                        ? null
-                        : () {
-                          final isCorrect =
-                              valueToCompare != null &&
-                              valueToCompare.toLowerCase() ==
-                                  correctAnswer.toLowerCase();
-                          _submitAnswer(valueToCompare, isCorrect: isCorrect);
-                        },
-                child: optionContent,
+                onTap: _localAnswerSubmitted
+                    ? null
+                    : () {
+                        _submitAnswer(valueToCompare);
+                      },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (showImage)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0),
+                          child: Image.network(
+                            imageUrl!,
+                            height: 90,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stack) =>
+                                const Icon(Icons.broken_image, size: 40),
+                          ),
+                        ),
+                      if (showText)
+                        Text(
+                          optionText,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 15),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
           );
@@ -11687,11 +12275,14 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (hangmanState == null)
       return const Center(child: CircularProgressIndicator());
 
-    final word = (hangmanState['wordToGuess']?.toString() ?? '').toUpperCase();
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
+    final word = _decodeWordSecret(hangmanState['wordToGuess']?.toString());
     final usedLetters = List<String>.from(hangmanState['usedLetters'] ?? []);
     final currentPlayerName =
         hangmanState['currentPlayerName']?.toString() ?? '';
-    final isMyTurn = currentPlayerName == widget.playerName;
+    final isMyTurn = currentPlayerName == playerUid;
     final isGameOver = hangmanState['gameOver'] == true;
     final mistakes = hangmanState['mistakes'] as int? ?? 0;
 
@@ -11714,7 +12305,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       statusText = "C'est votre tour !";
       statusColor = Colors.green;
     } else {
-      statusText = "Au tour de $currentPlayerName";
+      statusText = "Au tour de l'autre joueur";
       statusColor = Colors.blue;
     }
 
@@ -11771,11 +12362,14 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       return const Center(child: CircularProgressIndicator());
     }
 
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
     final isGameOver = memoryState['gameOver'] == true;
     final gameStatus = memoryState['status'] as String? ?? 'playing';
     final isMyTurn =
         _settings?.memoryMode == 'turnBased' &&
-        _memoryTurnPlayer == widget.playerName;
+        memoryState['currentPlayerName'] == playerUid;
 
     String statusText;
     Color statusColor;
@@ -11788,7 +12382,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       statusColor = Colors.orange;
     } else if (_settings?.memoryMode == 'turnBased') {
       statusText =
-          isMyTurn ? "C'est votre tour !" : "Au tour de $_memoryTurnPlayer";
+          isMyTurn ? "C'est votre tour !" : "Au tour de l'autre joueur";
       statusColor = isMyTurn ? Colors.green : Colors.blue;
     } else {
       statusText = 'Trouvez les paires !';
@@ -11834,11 +12428,20 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             if (card['flipped'] && value.startsWith('http')) {
               cardContent = Padding(
                 padding: const EdgeInsets.all(4.0),
-                child: Image.network(
-                  value,
+                child: CachedNetworkImage(
+                  imageUrl: value,
                   fit: BoxFit.cover,
-                  errorBuilder:
-                      (ctx, err, st) => const Icon(Icons.broken_image),
+                  placeholder:
+                      (_, __) => const Center(
+                        child: SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      ),
+                  errorWidget:
+                      (_, __, ___) =>
+                          const Icon(Icons.broken_image, color: Colors.grey),
                 ),
               );
             } else if (card['flipped']) {
@@ -11903,11 +12506,22 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                   Expanded(
                     child:
                         displayMode == 'imageToDefinition'
-                            ? Image.network(
-                              item1,
+                            ? CachedNetworkImage(
+                              imageUrl: item1,
                               height: 80,
-                              errorBuilder:
-                                  (c, e, s) => const Icon(Icons.image),
+                              fit: BoxFit.contain,
+                              placeholder:
+                                  (_, __) => const SizedBox(
+                                    height: 80,
+                                    child: Center(
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    ),
+                                  ),
+                              errorWidget:
+                                  (_, __, ___) =>
+                                      const Icon(Icons.broken_image, size: 40),
                             )
                             : Text(item1),
                   ),
@@ -11955,10 +12569,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (motMystereState == null)
       return const Center(child: CircularProgressIndicator());
 
-    final word =
-        (motMystereState['wordToGuess'] as String? ?? '').toUpperCase();
+    final String playerUid =
+        FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+
+    final word = _decodeWordSecret(motMystereState['wordToGuess'] as String?);
     final currentPlayerName = motMystereState['currentPlayerName'] as String?;
-    final isMyTurn = currentPlayerName == widget.playerName;
+    final isMyTurn = currentPlayerName == playerUid;
     final isGameOver = motMystereState['gameOver'] == true;
     final rawGuesses =
         (motMystereState['guesses'] as Map<String, dynamic>?) ?? {};
@@ -11976,7 +12592,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
           "C'est votre tour ! Devinez le mot de ${word.length} lettres.";
       statusColor = Colors.green;
     } else {
-      statusText = "Au tour de $currentPlayerName";
+      statusText = "Au tour de l'autre joueur";
       statusColor = Colors.blue;
     }
 
@@ -12041,7 +12657,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                '${entry.key} a tenté :',
+                'Tentatives :',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               ...(entry.value).map((g) {
@@ -12155,27 +12771,28 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       final snapshot = await transaction.get(roomRef);
       if (!snapshot.exists) return;
       var data = snapshot.data() as Map<String, dynamic>;
-      var players = Map<String, dynamic>.from(data['players']);
-      var gameState = Map<String, dynamic>.from(data['gameState']);
-      var playersAnswered = List<dynamic>.from(
-        gameState['playersAnswered'] ?? [],
-      );
-      players[widget.playerName]['score'] =
-          (players[widget.playerName]['score'] ?? 0) + points;
-      if (!playersAnswered.contains(widget.playerName))
-        playersAnswered.add(widget.playerName);
-      gameState['playersAnswered'] = playersAnswered;
-      if (_settings?.waitForAllPlayers == true &&
-          playersAnswered.length >= players.length) {
-        gameState['canGoToNextQuestion'] = true;
-      }
-      transaction.update(roomRef, {'players': players, 'gameState': gameState});
+      var players = Map<String, dynamic>.from(data['players'] ?? {});
+
+      final String playerUid =
+          FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+      final playerKey =
+          players.containsKey(playerUid) ? playerUid : widget.playerName;
+
+      transaction.update(roomRef, {
+        'players.$playerKey.score': FieldValue.increment(points),
+        'gameState.playersAnswered': FieldValue.arrayUnion([
+          playerKey,
+          widget.playerName,
+        ]),
+      });
     });
   }
 
   Widget _buildEstimationOnlineBody(Map<String, dynamic> game) {
     final question = game['question']?.toString() ?? '';
-    final correctAnswer = (game['answer'] as num?)?.toDouble() ?? 0;
+    final rawAns = _decodeWordSecret(game['answer']?.toString());
+    final correctAnswer =
+        double.tryParse(rawAns) ?? ((game['answer'] as num?)?.toDouble() ?? 0);
     final unit = game['unit']?.toString();
     final hint = game['hint']?.toString();
     final unitStr = unit != null && unit.isNotEmpty ? ' $unit' : '';
@@ -12336,6 +12953,10 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   String? _quizEclairSelectedAnswer;
   bool _quizEclairShowHint = false;
 
+  // --- NOUVEAU : Gestion des essais pour le Memory ---
+  int _memoryMaxMistakes = 0;
+  int _memoryCurrentMistakes = 0;
+
   // État pour le jeu Estimation
   int _estimationPoints = 0;
 
@@ -12379,6 +13000,8 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       _matches.clear();
       _memoryCards.clear();
       _memoryGameOver = false;
+      _memoryMaxMistakes = 0;
+      _memoryCurrentMistakes = 0;
       _penduAttempts = 6;
       _usedLetters.clear();
       _penduCurrent = '';
@@ -12475,6 +13098,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           }
         }
         _memoryCards.shuffle();
+        final int totalPairs = _memoryCards.length ~/ 2;
+        _memoryMaxMistakes = game['maxMistakes'] != null 
+            ? int.tryParse(game['maxMistakes'].toString()) ?? (totalPairs + 2)
+            : (totalPairs + 2);
+        _memoryCurrentMistakes = 0;
       } else if (gameType.contains('Pendu')) {
         final word = (game['word'] as String? ?? '').toUpperCase();
         _penduCurrent = word.replaceAll(RegExp(r'[A-Z]'), '_');
@@ -12546,9 +13174,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     String correctAnswerText = '';
 
     if (gameType.contains('Vrai ou Faux')) {
-      isCorrect =
-          (userAnswer?.toLowerCase() == 'true') == (game['answer'] as bool);
-      correctAnswerText = game['answer'] ? 'Vrai' : 'Faux';
+      final decoded =
+          _decodeWordSecret(game['answer']?.toString()).toLowerCase();
+      final isTrue = decoded == 'true' || game['answer'] == true;
+      isCorrect = (userAnswer?.toLowerCase() == 'true') == isTrue;
+      correctAnswerText = isTrue ? 'Vrai' : 'Faux';
     } else if (gameType.contains('QCM')) {
       final rawCorrect = game['correct']?.toString() ?? '';
       final opts = List<dynamic>.from(game['options'] ?? []);
@@ -12754,9 +13384,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
   void _flipCard(int index) {
     if (_answered ||
+        _memoryGameOver ||
         _memoryCards[index]['flipped'] ||
         _flippedCardIndexes.length == 2)
       return;
+
     setState(() {
       _memoryCards[index]['flipped'] = true;
       _flippedCardIndexes.add(index);
@@ -12769,23 +13401,42 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       final card2 = _memoryCards[card2Index];
 
       if (card1['id'] == card2['id']) {
+        // Paire trouvée !
         setState(() {
           _memoryCards[card1Index]['matched'] = true;
           _memoryCards[card2Index]['matched'] = true;
           _flippedCardIndexes.clear();
         });
-        if (_memoryCards.every((c) => c['matched']))
+
+        // Vérifie si tout est gagné
+        if (_memoryCards.every((c) => c['matched'])) {
+          final totalPairs = _memoryCards.length ~/ 2;
           setState(() {
             _memoryGameOver = true;
-            _finalizeAnswer(true, '');
+            _currentScore += totalPairs; // Plein score
+            _feedback = 'Bravo ! Toutes les paires trouvées en faisant $_memoryCurrentMistakes erreur(s) !';
+            _answered = true;
           });
+        }
       } else {
-        Future.delayed(const Duration(milliseconds: 1000), () {
+        // Erreur : on incrémente le compteur d'erreurs
+        _memoryCurrentMistakes++;
+        
+        Future.delayed(const Duration(milliseconds: 900), () {
           if (mounted) {
             setState(() {
               _memoryCards[card1Index]['flipped'] = false;
               _memoryCards[card2Index]['flipped'] = false;
               _flippedCardIndexes.clear();
+
+              // Vérifie si le joueur a épuisé ses essais
+              if (_memoryCurrentMistakes >= _memoryMaxMistakes) {
+                _memoryGameOver = true;
+                _answered = true;
+                final matchedPairs = _memoryCards.where((c) => c['matched']).length ~/ 2;
+                _currentScore += matchedPairs; // Score partiel
+                _feedback = 'Échec ! Limite d\'erreurs atteinte ($_memoryCurrentMistakes/$_memoryMaxMistakes).\nVous avez trouvé $matchedPairs paire(s).';
+              }
             });
           }
         });
@@ -12990,7 +13641,9 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     setState(() {
       _estimationPoints = points;
       _answered = true;
-      _currentScore += (points ~/ 4); // 0 à 2 points sur le score global solo
+      // Normalise sur 2 points max pour être conforme au total possible de 2 du Backend
+      final double addedPoints = (points / 5.0); // 10 pts -> 2.0 pts
+      _currentScore += addedPoints;
       _feedback =
           'La réponse était $correctStr$unitStr\n$emoji ($points/10 pts)';
     });
@@ -13671,51 +14324,98 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       );
     }
     if (gameType.contains('Memory')) {
-      return GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 4,
-          crossAxisSpacing: 8,
-          mainAxisSpacing: 8,
-        ),
-        itemCount: _memoryCards.length,
-        itemBuilder: (context, index) {
-          final card = _memoryCards[index];
-          final value = card['value'].toString();
-          Widget cardContent;
-
-          if (card['flipped'] && value.startsWith('http')) {
-            cardContent = Padding(
-              padding: const EdgeInsets.all(4.0),
-              child: _cachedImage(value, fit: BoxFit.cover),
-            );
-          } else if (card['flipped']) {
-            cardContent = Center(
-              child: Text(
-                value,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12),
+      final remainingMistakes = max(0, _memoryMaxMistakes - _memoryCurrentMistakes);
+      return Column(
+        children: [
+          // Bandeau d'information sur les essais
+          Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            decoration: BoxDecoration(
+              color: remainingMistakes <= 2 
+                  ? Colors.red.withOpacity(0.1) 
+                  : Colors.indigo.withOpacity(0.08),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: remainingMistakes <= 2 ? Colors.red : Colors.indigo.withOpacity(0.3),
               ),
-            );
-          } else {
-            cardContent = Container();
-          }
-
-          return GestureDetector(
-            onTap: () => _flipCard(index),
-            child: Card(
-              clipBehavior: Clip.antiAlias,
-              color:
-                  card['matched']
-                      ? Colors.green.shade200
-                      : (card['flipped']
-                          ? Colors.blue.shade100
-                          : Colors.grey.shade400),
-              child: cardContent,
             ),
-          );
-        },
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.favorite, 
+                      color: remainingMistakes <= 2 ? Colors.red : Colors.pink, 
+                      size: 18
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Erreurs permises : $remainingMistakes / $_memoryMaxMistakes',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: remainingMistakes <= 2 ? Colors.red : Colors.indigo,
+                      ),
+                    ),
+                  ],
+                ),
+                Text(
+                  '${_memoryCards.where((c) => c['matched']).length ~/ 2} / ${_memoryCards.length ~/ 2} paires',
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+            ),
+            itemCount: _memoryCards.length,
+            itemBuilder: (context, index) {
+              final card = _memoryCards[index];
+              final value = card['value'].toString();
+              Widget cardContent;
+
+              if (card['flipped'] && value.startsWith('http')) {
+                cardContent = Padding(
+                  padding: const EdgeInsets.all(4.0),
+                  child: _cachedImage(value, fit: BoxFit.cover),
+                );
+              } else if (card['flipped']) {
+                cardContent = Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(4.0),
+                    child: Text(
+                      value,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                );
+              } else {
+                cardContent = const Icon(Icons.help_outline, color: Colors.white70);
+              }
+
+              return GestureDetector(
+                onTap: () => _flipCard(index),
+                child: Card(
+                  clipBehavior: Clip.antiAlias,
+                  color: card['matched']
+                      ? Colors.green.shade400
+                      : (card['flipped']
+                          ? Colors.blue.shade200
+                          : Colors.indigo.shade400),
+                  child: cardContent,
+                ),
+              );
+            },
+          ),
+        ],
       );
     }
     // NOUVEAU: Logique d'affichage pour Mot Mystère
@@ -14211,10 +14911,10 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
     if (gameType.contains('Vrai ou Faux')) {
       options = ['True', 'False'];
-      correctAnswer = game['answer'].toString();
+      correctAnswer = _decodeWordSecret(game['answer']?.toString());
     } else if (gameType.contains('QCM')) {
       options = List<dynamic>.from(game['options'] ?? []);
-      final rawCorrect = game['correct']?.toString() ?? '';
+      final rawCorrect = _decodeWordSecret(game['correct']?.toString());
       final idx = int.tryParse(rawCorrect);
       correctAnswer =
           (idx != null && idx >= 0 && idx < options.length)
@@ -14224,49 +14924,40 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
               : rawCorrect;
     } else if (gameType.contains('Choisir l\'Intrus')) {
       options = List<dynamic>.from(game['options'] ?? []);
-      correctAnswer = game['intruder']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['intruder']?.toString());
     } else if (gameType.contains('Deux Vérités') ||
         gameType.contains('Deux Vérités')) {
       options = List<dynamic>.from(game['statements'] ?? []);
-      correctAnswer = game['lie']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(game['lie']?.toString());
       questionData['text'] = "Identifiez le mensonge parmi ces affirmations :";
     } else if (gameType.contains('Quiz Éclair') ||
         gameType.contains('Quiz Eclair')) {
       options = List<dynamic>.from(
         game['choices'] ?? game['options'] ?? ['Vrai', 'Faux', 'Peut-Être'],
       );
-      correctAnswer =
-          game['correct']?.toString() ?? game['answer']?.toString() ?? '';
+      correctAnswer = _decodeWordSecret(
+        game['correct']?.toString() ?? game['answer']?.toString(),
+      );
     }
+
+    final qImageUrl = questionData['image_url'] ?? game['image_url'];
+    final qText = questionData['text']?.toString() ?? '';
 
     Widget questionWidget = Column(
       children: [
-        if (widget.qcmQuestionMode != DisplayMode.text &&
-            questionData['image_url'] != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: _cachedImage(
-              questionData['image_url'],
-              height: 150,
-              fit: BoxFit.contain,
-            ),
-          ),
-        if (questionData['image_url'] == null && game['image_url'] != null)
+        if (widget.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
           Padding(
             padding: const EdgeInsets.only(bottom: 8.0),
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
-              child: _cachedImage(
-                game['image_url'],
-                height: 150,
-                fit: BoxFit.contain,
-              ),
+              child: _cachedImage(qImageUrl, height: 150, fit: BoxFit.contain),
             ),
           ),
-        if (widget.qcmQuestionMode != DisplayMode.image &&
-            questionData['text'] != null)
+        if ((widget.qcmQuestionMode != DisplayMode.image ||
+                qImageUrl == null) &&
+            qText.isNotEmpty)
           Text(
-            questionData['text'],
+            qText,
             style: const TextStyle(fontSize: 18),
             textAlign: TextAlign.center,
           ),
@@ -14292,42 +14983,51 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             valueToCompare = optionText;
           }
 
-          Widget optionContent = Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              if (widget.qcmAnswerMode != DisplayMode.text && imageUrl != null)
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(4.0),
-                    child: _cachedImage(imageUrl, fit: BoxFit.contain),
-                  ),
-                ),
-              if (widget.qcmAnswerMode != DisplayMode.image &&
-                  optionText.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.all(8.0),
-                  child: Text(
-                    optionText,
-                    textAlign: TextAlign.center,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-          );
+          final bool showImage =
+              widget.qcmAnswerMode != DisplayMode.text && imageUrl != null;
+          final bool showText =
+              (widget.qcmAnswerMode != DisplayMode.image || imageUrl == null) &&
+              optionText.isNotEmpty;
 
-          return SizedBox(
-            height: widget.qcmAnswerMode == DisplayMode.text ? 60 : 150,
+          return Container(
+            margin: const EdgeInsets.symmetric(vertical: 4),
+            constraints: BoxConstraints(
+              minHeight: (showImage && showText) ? 120 : (showImage ? 90 : 56),
+            ),
             child: Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
-                onTap:
-                    _answered
-                        ? null
-                        : () {
-                          _checkAnswer(valueToCompare);
-                        },
-                child: optionContent,
+                onTap: _answered
+                    ? null
+                    : () {
+                        _checkAnswer(valueToCompare);
+                      },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (showImage)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8.0),
+                          child: Image.network(
+                            imageUrl!,
+                            height: 90,
+                            fit: BoxFit.contain,
+                            errorBuilder: (context, error, stack) =>
+                                const Icon(Icons.broken_image, size: 40),
+                          ),
+                        ),
+                      if (showText)
+                        Text(
+                          optionText,
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(fontSize: 15),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
           );
