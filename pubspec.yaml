@@ -27,6 +27,8 @@ dependencies:
   firebase_messaging: ^16.4.3
   cupertino_icons: ^1.0.8
   html: ^0.15.0
+  url_launcher: ^6.3.1
+  firebase_app_check: ^0.4.5+2
 
 
 dev_dependencies:

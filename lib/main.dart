@@ -21,6 +21,161 @@ import 'package:image_picker/image_picker.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:typed_data';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
+
+// --- CONFIGURATION DE LA VERSION ACTUELLE DE L'APPLICATION ---
+// Incrémente ce numéro à chaque nouvelle publication sur le Play Store / App Store
+const int CURRENT_APP_BUILD_NUMBER = 1; 
+const String CURRENT_APP_VERSION_NAME = "1.0.0";
+
+// --- INTERCEPTEUR D'URGENCE GLOBAL (AUTO-DESTRUCTION / LOCKDOWN) ---
+class GlobalSecurityHandler {
+  static final ValueNotifier<bool> isLockedOut = ValueNotifier<bool>(false);
+
+  static void triggerLockdown() {
+    isLockedOut.value = true;
+  }
+}
+
+// --- WIDGET ENVELOPPE DE SÉCURITÉ GLOBALE (FORCE UPDATE) ---
+class ForceUpdateGate extends StatelessWidget {
+  final Widget child;
+  const ForceUpdateGate({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot>(
+      stream: FirebaseFirestore.instance.collection('config').doc('app_version').snapshots(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData || !snapshot.data!.exists) {
+          // Si la configuration n'existe pas encore sur Firestore, l'app fonctionne normalement
+          return child;
+        }
+
+        final data = snapshot.data!.data() as Map<String, dynamic>? ?? {};
+        final int minRequiredBuildNumber = data['minRequiredBuildNumber'] ?? 1;
+        final bool isMaintenance = data['isMaintenance'] ?? false;
+        final String updateMessage = data['updateMessage'] ?? 
+            "Une nouvelle version de QuizBot est disponible ! Vous devez mettre à jour l'application pour continuer à jouer.";
+        final String storeUrl = data['storeUrl'] ?? "https://play.google.com/store";
+
+        // VÉRIFICATION : Version obsolète ou maintenance activée
+        if (CURRENT_APP_BUILD_NUMBER < minRequiredBuildNumber || isMaintenance) {
+          return ForceUpdateScreen(
+            message: updateMessage,
+            storeUrl: storeUrl,
+            isMaintenance: isMaintenance,
+            minVersion: data['minRequiredVersionName'] ?? "Dernière version",
+          );
+        }
+
+        return child;
+      },
+    );
+  }
+}
+
+// --- ÉCRAN DE BLOCAGE INCONTOURNABLE ---
+class ForceUpdateScreen extends StatelessWidget {
+  final String message;
+  final String storeUrl;
+  final bool isMaintenance;
+  final String minVersion;
+
+  const ForceUpdateScreen({
+    super.key,
+    required this.message,
+    required this.storeUrl,
+    required this.isMaintenance,
+    required this.minVersion,
+  });
+
+  Future<void> _openStore() async {
+    final uri = Uri.parse(storeUrl);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return PopScope(
+      canPop: false, // Empêche le bouton retour physique ou gestuel
+      child: Scaffold(
+        backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: BoxDecoration(
+                    color: (isMaintenance ? Colors.orange : AppColors.primaryBlue).withOpacity(0.12),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    isMaintenance ? Icons.construction_rounded : Icons.system_update_rounded,
+                    size: 72,
+                    color: isMaintenance ? Colors.orange : AppColors.primaryBlue,
+                  ),
+                ),
+                const SizedBox(height: 28),
+                Text(
+                  isMaintenance ? "Maintenance en cours" : "Mise à jour requise",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  message,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.4,
+                    color: isDark ? Colors.white70 : Colors.black87,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (!isMaintenance)
+                  Chip(
+                    label: Text("Version requise : $minVersion"),
+                    backgroundColor: AppColors.primaryBlue.withOpacity(0.1),
+                  ),
+                const SizedBox(height: 36),
+                if (!isMaintenance)
+                  SizedBox(
+                    width: double.infinity,
+                    height: 52,
+                    child: ElevatedButton.icon(
+                      onPressed: _openStore,
+                      icon: const Icon(Icons.download_rounded, color: Colors.white),
+                      label: const Text(
+                        "Mettre à jour maintenant",
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primaryBlue,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        elevation: 4,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 // Gestionnaire des notifications reçues quand l'application est fermée ou en arrière-plan
 @pragma('vm:entry-point')
@@ -34,28 +189,39 @@ Future<void> setupFCMToken() async {
   if (user == null || user.isAnonymous) return;
 
   try {
-    String? token = await FirebaseMessaging.instance.getToken();
-    if (token != null) {
-      await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'fcmTokens': FieldValue.arrayUnion([token]),
-      }, SetOptions(merge: true));
-      print("Token FCM enregistré : $token");
+    final messaging = FirebaseMessaging.instance;
+    
+    // Demande de permission
+    NotificationSettings settings = await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+    );
+
+    if (settings.authorizationStatus == AuthorizationStatus.authorized ||
+        settings.authorizationStatus == AuthorizationStatus.provisional) {
+      // Récupération du token
+      String? token = await messaging.getToken();
+      if (token != null) {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'fcmTokens': FieldValue.arrayUnion([token]),
+        }, SetOptions(merge: true));
+        print("Token FCM enregistré : $token");
+      }
+
+      // Écoute du renouvellement
+      messaging.onTokenRefresh.listen((newToken) {
+        FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'fcmTokens': FieldValue.arrayUnion([newToken]),
+        }, SetOptions(merge: true));
+      });
     }
 
-    // Écoute si le token change
-    FirebaseMessaging.instance.onTokenRefresh.listen((newToken) {
-      FirebaseFirestore.instance.collection('users').doc(user.uid).set({
-        'fcmTokens': FieldValue.arrayUnion([newToken]),
-      }, SetOptions(merge: true));
+    // NOUVEAU : Réception d'une notif en direct dans l'app
+    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      print("Notification reçue en direct : ${message.notification?.title}");
     });
 
-    // Écoute des notifications en avant-plan (application ouverte)
-    FirebaseMessaging.onMessage.listen((RemoteMessage message) {
-      final notification = message.notification;
-      if (notification != null) {
-        print("Notification reçue en direct : ${notification.title}");
-      }
-    });
   } catch (e) {
     print("Erreur configuration FCM : $e");
   }
@@ -92,8 +258,14 @@ Future<Map<String, dynamic>> callSecureAI({
       throw Exception("Vous devez être connecté pour utiliser l'IA.");
     }
 
-    final callable = FirebaseFunctions.instance.httpsCallable('generateQuiz');
+    final callable = FirebaseFunctions.instance.httpsCallable(
+      'generateQuiz',
+      options: HttpsCallableOptions(
+        timeout: const Duration(seconds: 120),
+      ),
+    );
     final result = await callable.call({
+      'clientBuildNumber': CURRENT_APP_BUILD_NUMBER,
       'prompt': prompt,
       'temperature': temperature,
       'imageRequested': imageRequested,
@@ -111,14 +283,22 @@ Future<Map<String, dynamic>> callSecureAI({
     }
 
     return Map<String, dynamic>.from(result.data as Map);
-  } on FirebaseFunctionsException catch (e) {
+  } on FirebaseFunctionsException catch (e, stack) {
+    print('[callSecureAI] Erreur FirebaseFunctionsException: code=${e.code}, message=${e.message}, details=${e.details}');
+    print('[callSecureAI] Stack trace: $stack');
+    if (e.message != null &&
+        (e.message!.contains('VERSION_OBSOLETE') ||
+         e.message!.contains('SERVEUR_EN_MAINTENANCE'))) {
+      GlobalSecurityHandler.triggerLockdown();
+    }
     if (e.message != null && e.message!.contains('401')) {
       throw Exception(
         'Clé API SiliconFlow non autorisée (401). Vérifiez DEEPSEEK_API_KEY.',
       );
     }
     throw Exception(e.message ?? 'Erreur du serveur [${e.code}]');
-  } catch (e) {
+  } catch (e, stack) {
+    print('[callSecureAI] Erreur générale: $e\nStack trace: $stack');
     final msg = e.toString().replaceAll('Exception: ', '');
     throw Exception(msg);
   }
@@ -771,6 +951,7 @@ class _GameResultsPageState extends State<GameResultsPage> {
         'submitGameResult',
       );
       final result = await callable.call({
+        'clientBuildNumber': CURRENT_APP_BUILD_NUMBER,
         'gameType': 'online',
         'roomId': widget.roomId,
         'quizId': quizId,
@@ -1328,17 +1509,32 @@ void main() async {
     );
     print("Firebase initialisé avec succès");
 
-    // --- INITIALISATION DES NOTIFICATIONS PUSH ---
+    // BOUCLIER APP CHECK
+    await FirebaseAppCheck.instance.activate(
+      androidProvider: AndroidProvider.playIntegrity,
+      appleProvider: AppleProvider.appAttest,
+    );
+
+    // GESTIONNAIRE D'ARRIÈRE-PLAN
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
     
-    // Demande de permission (iOS et Android 13+)
     final messaging = FirebaseMessaging.instance;
-    NotificationSettings settings = await messaging.requestPermission(
+    
+    // 1. Demande de permission
+    await messaging.requestPermission(
+      alert: true,
+      badge: true,
+      sound: true,
+      provisional: false,
+    );
+
+    // 2. NOUVEAU : Forcer l'affichage de la bannière même si l'application est OUVERTE
+    await messaging.setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
     );
-    print('Statut de permission notifications : ${settings.authorizationStatus}');
+
   } catch (e) {
     print("Erreur lors de l'initialisation de Firebase: $e");
   }
@@ -1362,6 +1558,23 @@ class MiniGamesApp extends StatelessWidget {
             themeMode: themeProvider.themeMode,
             theme: _buildLightTheme(),
             darkTheme: _buildDarkTheme(),
+            builder: (context, child) {
+              // Écouteur global : si le serveur dit que l'app est obsolète, on écrase TOUT l'écran
+              return ValueListenableBuilder<bool>(
+                valueListenable: GlobalSecurityHandler.isLockedOut,
+                builder: (context, isLocked, _) {
+                  if (isLocked) {
+                    return const ForceUpdateScreen(
+                      message: "Votre version n'est plus autorisée par le serveur. Veuillez mettre à jour l'application sur le Store.",
+                      storeUrl: "https://play.google.com/store",
+                      isMaintenance: false,
+                      minVersion: "Dernière version requise",
+                    );
+                  }
+                  return ForceUpdateGate(child: child!);
+                },
+              );
+            },
             home: const AuthWrapper(),
           );
         },
@@ -1389,6 +1602,10 @@ class _AuthWrapperState extends State<AuthWrapper> {
           );
         }
         if (snapshot.hasData) {
+          // ENREGISTREMENT AUTOMATIQUE DU TOKEN FCM A LA CONNEXION
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            setupFCMToken();
+          });
           return const HomePage();
         }
         return const AuthPage();
@@ -1662,6 +1879,7 @@ enum MatchDisplayMode { definitionToWord, imageToDefinition }
 enum MemoryDisplayMode { wordToDefinition, definitionToImage, imagePair }
 
 class _HomePageState extends State<HomePage> {
+  final _titleController = TextEditingController();
   final _textController = TextEditingController();
   final _nameController = TextEditingController();
 
@@ -1763,6 +1981,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _titleController.dispose();
     _textController.dispose();
     _nameController.dispose();
     super.dispose();
@@ -1993,6 +2212,10 @@ class _HomePageState extends State<HomePage> {
         'quizId': quizRef.id,
         'userName': name,
         'userId': _currentUser?.uid,
+        'title':
+            _titleController.text.trim().isNotEmpty
+                ? _titleController.text.trim()
+                : (text.length > 30 ? text.substring(0, 30) : text),
         'text': text,
         'games': games,
         'timestamp': FieldValue.serverTimestamp(),
@@ -2173,7 +2396,8 @@ class _HomePageState extends State<HomePage> {
     try {
       String systemPromptContent = '''
 Tu es un concepteur de quiz éducatifs très créatif et imprévisible. 
-Ta mission est de transformer le texte fourni en un QUIZ sous forme de tableau JSON valide.
+IMPORTANT : Tu dois retourner un OBJET JSON unique avec exactement deux clés : "title" (un titre court, accrocheur et pertinent de 3 à 6 mots) et "games" (le tableau des jeux).
+Ta mission est de transformer le texte fourni en un QUIZ au format JSON valide.
 
 Types de jeux autorisés : $allowedTypesText.
 
@@ -2204,8 +2428,8 @@ Génère la NOUVELLE liste complète de manière créative et retourne UNIQUEMEN
         if (_aiDecideGames) {
           systemPromptContent += '''
 RÈGLE DE LIBERTÉ ABSOLUE (L'IA DÉCIDE) :
-- Adapte le nombre total d'épreuves et les types de jeux librement selon la richesse du texte.
-- Pas de nombre fixe : tu décides de tout de manière cohérente et équilibrée.
+- NOMBRE ALÉATOIRE : Génère un nombre STRICTEMENT ALÉATOIRE de jeux (entre 3 et 7 jeux maximum, selon la richesse du texte). Ne fais JAMAIS exactement 10 jeux.
+- VARIÉTÉ OBLIGATOIRE : Ne te contente PAS uniquement de QCM et Vrai/Faux. Tu DOIS absolument inclure des jeux créatifs et variés (Pendu, Memory, Chronologie, Anagramme, Mot Mystère, Relier, etc.).
 ''';
         } else {
           systemPromptContent += '''
@@ -2325,7 +2549,13 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         print("[JSON_PARSE] La réponse JSON a été parsée avec succès.");
 
         List<dynamic> gamesList;
-        if (decodedJson is List) {
+        if (decodedJson is Map && decodedJson.containsKey('games')) {
+          if (decodedJson['title'] != null &&
+              _titleController.text.trim().isEmpty) {
+            _titleController.text = decodedJson['title'].toString();
+          }
+          gamesList = decodedJson['games'] as List<dynamic>;
+        } else if (decodedJson is List) {
           gamesList = decodedJson;
         } else {
           gamesList = [decodedJson];
@@ -4104,6 +4334,18 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
             const SizedBox(height: 16),
           ],
 
+          StyledCard(
+            child: TextField(
+              controller: _titleController,
+              decoration: const InputDecoration(
+                labelText: 'Titre du Quiz (Généré par l\'IA ou modifiable)',
+                border: OutlineInputBorder(),
+                hintText: 'Ex: Les Mystères de Rome...',
+                prefixIcon: Icon(Icons.title),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
           StyledCard(
             child: TextField(
               controller: _textController,
@@ -6909,7 +7151,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
   // Menu d'actions minimaliste
   void _showActionsMenu(BuildContext context, Map<String, dynamic> quiz) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final cardBg = Theme.of(context).cardColor;
+    final cardBg = Theme.of(context).colorScheme.surface;
     final textColor = Theme.of(context).colorScheme.onSurface;
 
     showModalBottomSheet(
@@ -7104,7 +7346,7 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                         ),
                       ),
                       title: Text(
-                        quiz['text']?.toString() ?? 'Sans titre',
+                        quiz['title']?.toString() ?? quiz['text']?.toString() ?? 'Sans titre',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
@@ -7611,7 +7853,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
         elevation: 0,
         title: DropdownButton<String>(
           value: _selectedCountry,
-          dropdownColor: Theme.of(context).cardColor,
+          dropdownColor: Theme.of(context).colorScheme.surface,
           items:
               _countries
                   .map(
@@ -7703,7 +7945,7 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
                   if (_myScoreData != null && _myRank != null)
                     Container(
                       decoration: BoxDecoration(
-                        color: Theme.of(context).cardColor,
+                        color: Theme.of(context).colorScheme.surface,
                         boxShadow: const [
                           BoxShadow(
                             color: Colors.black12,
@@ -10919,7 +11161,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         'players.$playerKey.score': FieldValue.increment(points),
         'gameState.playersAnswered': FieldValue.arrayUnion([
           playerKey,
-          widget.playerName,
         ]),
       });
     });
@@ -11270,6 +11511,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
           card2Index < 0 ||
           card2Index >= currentCards.length)
         return;
+      if (currentCards[card1Index] == null || currentCards[card2Index] == null) return;
 
       Map<String, dynamic> card1 = Map<String, dynamic>.from(
         currentCards[card1Index],
@@ -12782,7 +13024,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         'players.$playerKey.score': FieldValue.increment(points),
         'gameState.playersAnswered': FieldValue.arrayUnion([
           playerKey,
-          widget.playerName,
         ]),
       });
     });
@@ -13104,7 +13345,14 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             : (totalPairs + 2);
         _memoryCurrentMistakes = 0;
       } else if (gameType.contains('Pendu')) {
-        final word = (game['word'] as String? ?? '').toUpperCase();
+        String word = (game['word'] as String? ?? '').toUpperCase();
+        word = word.replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
+                   .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
+                   .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
+                   .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
+                   .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
+                   .replaceAll(RegExp(r'[Ç]'), 'C')
+                   .replaceAll(RegExp(r'[^A-Z]'), '');
         _penduCurrent = word.replaceAll(RegExp(r'[A-Z]'), '_');
       } else if (gameType.contains('Chronologie')) {
         _originalEvents = List<String>.from(game['events']);
@@ -13447,7 +13695,14 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
   void _guessLetter(String letter) {
     if (_answered || _usedLetters.contains(letter)) return;
     final game = widget.games[_currentGameIndex];
-    final word = (game['word']?.toString() ?? '').toUpperCase();
+    String word = (game['word']?.toString() ?? '').toUpperCase();
+    word = word.replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
+               .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
+               .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
+               .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
+               .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
+               .replaceAll(RegExp(r'[Ç]'), 'C')
+               .replaceAll(RegExp(r'[^A-Z]'), '');
     setState(() {
       _usedLetters.add(letter);
       if (word.contains(letter)) {
