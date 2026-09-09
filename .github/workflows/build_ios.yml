@@ -5,7 +5,7 @@ on:
 
 jobs:
   build-ios:
-    runs-on: macos-14 # Apple Silicon M1/M2 plus récent, rapide et compatible Xcode 15/16
+    runs-on: macos-14
     steps:
       - name: 📥 Cloner le dépôt
         uses: actions/checkout@v4
@@ -16,18 +16,11 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 🛠️ Pré-créer les dossiers de build (Corrige le bug rsync de Firebase)
-        run: |
-          mkdir -p build/ios/SourcePackages
+      - name: 🛠️ Pré-créer les répertoires
+        run: mkdir -p build/ios/SourcePackages
 
-      - name: 📦 Récupérer les dépendances Flutter
+      - name: 📦 Dépendances Flutter
         run: flutter pub get
-
-      - name: 🍎 Installer CocoaPods
-        run: |
-          cd ios
-          pod install --repo-update
-          cd ..
 
       - name: 🔨 Compiler l'application iOS (Sans signature)
         run: flutter build ios --release --no-codesign
