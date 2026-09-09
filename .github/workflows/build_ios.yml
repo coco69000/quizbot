@@ -1,0 +1,50 @@
+name: Build iOS IPA (Unsigned for Sideloadly)
+
+on:
+  workflow_dispatch: # Permet de lancer la compilation manuellement depuis GitHub
+
+jobs:
+  build-ios:
+    runs-on: macos-14 # Utilise un Mac virtuel Apple Silicon rapide dans le Cloud GitHub
+    steps:
+      - name: 📥 Cloner le dépôt
+        uses: actions/checkout@v4
+
+      - name: ☕ Configurer Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: 🐦 Installer Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: 📦 Récupérer les dépendances Flutter
+        run: flutter pub get
+
+      - name: 🍎 Installer les Pods iOS
+        run: |
+          cd ios
+          pod install --repo-update
+          cd ..
+
+      - name: 🔨 Compiler l'application iOS (Sans signature)
+        run: flutter build ios --release --no-codesign
+
+      - name: 📦 Créer le fichier .IPA pour Sideloadly
+        run: |
+          cd build/ios/iphoneos
+          mkdir Payload
+          cp -r Runner.app Payload/
+          zip -r QuizBot_unsigned.ipa Payload/
+          cd ../../..
+
+      - name: 🚀 Télécharger le fichier IPA (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuizBot-iOS-IPA
+          path: build/ios/iphoneos/QuizBot_unsigned.ipa
+          retention-days: 7

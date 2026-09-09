@@ -23,10 +23,37 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'dart:typed_data';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_app_check/firebase_app_check.dart';
+import 'package:confetti/confetti.dart';
+import 'dart:io';
+
+// --- RETOURS HAPTIQUES ---
+void triggerHapticSuccess() {
+  HapticFeedback.lightImpact();
+  Future.delayed(
+    const Duration(milliseconds: 100),
+    () => HapticFeedback.mediumImpact(),
+  );
+}
+
+void triggerHapticError() {
+  HapticFeedback.heavyImpact();
+}
+
+// --- VÉRIFICATION INTERNET ROBUSTE ---
+Future<bool> checkInternetConnection() async {
+  try {
+    final result = await InternetAddress.lookup('google.com');
+    return result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+  } on SocketException catch (_) {
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
 
 // --- CONFIGURATION DE LA VERSION ACTUELLE DE L'APPLICATION ---
 // Incrémente ce numéro à chaque nouvelle publication sur le Play Store / App Store
-const int CURRENT_APP_BUILD_NUMBER = 1; 
+const int CURRENT_APP_BUILD_NUMBER = 1;
 const String CURRENT_APP_VERSION_NAME = "1.0.0";
 
 // --- INTERCEPTEUR D'URGENCE GLOBAL (AUTO-DESTRUCTION / LOCKDOWN) ---
@@ -46,7 +73,11 @@ class ForceUpdateGate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: FirebaseFirestore.instance.collection('config').doc('app_version').snapshots(),
+      stream:
+          FirebaseFirestore.instance
+              .collection('config')
+              .doc('app_version')
+              .snapshots(),
       builder: (context, snapshot) {
         if (!snapshot.hasData || !snapshot.data!.exists) {
           // Si la configuration n'existe pas encore sur Firestore, l'app fonctionne normalement
@@ -56,12 +87,15 @@ class ForceUpdateGate extends StatelessWidget {
         final data = snapshot.data!.data() as Map<String, dynamic>? ?? {};
         final int minRequiredBuildNumber = data['minRequiredBuildNumber'] ?? 1;
         final bool isMaintenance = data['isMaintenance'] ?? false;
-        final String updateMessage = data['updateMessage'] ?? 
+        final String updateMessage =
+            data['updateMessage'] ??
             "Une nouvelle version de QuizBot est disponible ! Vous devez mettre à jour l'application pour continuer à jouer.";
-        final String storeUrl = data['storeUrl'] ?? "https://play.google.com/store";
+        final String storeUrl =
+            data['storeUrl'] ?? "https://play.google.com/store";
 
         // VÉRIFICATION : Version obsolète ou maintenance activée
-        if (CURRENT_APP_BUILD_NUMBER < minRequiredBuildNumber || isMaintenance) {
+        if (CURRENT_APP_BUILD_NUMBER < minRequiredBuildNumber ||
+            isMaintenance) {
           return ForceUpdateScreen(
             message: updateMessage,
             storeUrl: storeUrl,
@@ -115,18 +149,26 @@ class ForceUpdateScreen extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.all(24),
                   decoration: BoxDecoration(
-                    color: (isMaintenance ? Colors.orange : AppColors.primaryBlue).withOpacity(0.12),
+                    color: (isMaintenance
+                            ? Colors.orange
+                            : AppColors.primaryBlue)
+                        .withOpacity(0.12),
                     shape: BoxShape.circle,
                   ),
                   child: Icon(
-                    isMaintenance ? Icons.construction_rounded : Icons.system_update_rounded,
+                    isMaintenance
+                        ? Icons.construction_rounded
+                        : Icons.system_update_rounded,
                     size: 72,
-                    color: isMaintenance ? Colors.orange : AppColors.primaryBlue,
+                    color:
+                        isMaintenance ? Colors.orange : AppColors.primaryBlue,
                   ),
                 ),
                 const SizedBox(height: 28),
                 Text(
-                  isMaintenance ? "Maintenance en cours" : "Mise à jour requise",
+                  isMaintenance
+                      ? "Maintenance en cours"
+                      : "Mise à jour requise",
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                     fontSize: 24,
@@ -156,14 +198,23 @@ class ForceUpdateScreen extends StatelessWidget {
                     height: 52,
                     child: ElevatedButton.icon(
                       onPressed: _openStore,
-                      icon: const Icon(Icons.download_rounded, color: Colors.white),
+                      icon: const Icon(
+                        Icons.download_rounded,
+                        color: Colors.white,
+                      ),
                       label: const Text(
                         "Mettre à jour maintenant",
-                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
                       ),
                       style: ElevatedButton.styleFrom(
                         backgroundColor: AppColors.primaryBlue,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
                         elevation: 4,
                       ),
                     ),
@@ -190,7 +241,7 @@ Future<void> setupFCMToken() async {
 
   try {
     final messaging = FirebaseMessaging.instance;
-    
+
     // Demande de permission
     NotificationSettings settings = await messaging.requestPermission(
       alert: true,
@@ -221,7 +272,6 @@ Future<void> setupFCMToken() async {
     FirebaseMessaging.onMessage.listen((RemoteMessage message) {
       print("Notification reçue en direct : ${message.notification?.title}");
     });
-
   } catch (e) {
     print("Erreur configuration FCM : $e");
   }
@@ -260,9 +310,7 @@ Future<Map<String, dynamic>> callSecureAI({
 
     final callable = FirebaseFunctions.instance.httpsCallable(
       'generateQuiz',
-      options: HttpsCallableOptions(
-        timeout: const Duration(seconds: 120),
-      ),
+      options: HttpsCallableOptions(timeout: const Duration(seconds: 120)),
     );
     final result = await callable.call({
       'clientBuildNumber': CURRENT_APP_BUILD_NUMBER,
@@ -284,11 +332,13 @@ Future<Map<String, dynamic>> callSecureAI({
 
     return Map<String, dynamic>.from(result.data as Map);
   } on FirebaseFunctionsException catch (e, stack) {
-    print('[callSecureAI] Erreur FirebaseFunctionsException: code=${e.code}, message=${e.message}, details=${e.details}');
+    print(
+      '[callSecureAI] Erreur FirebaseFunctionsException: code=${e.code}, message=${e.message}, details=${e.details}',
+    );
     print('[callSecureAI] Stack trace: $stack');
     if (e.message != null &&
         (e.message!.contains('VERSION_OBSOLETE') ||
-         e.message!.contains('SERVEUR_EN_MAINTENANCE'))) {
+            e.message!.contains('SERVEUR_EN_MAINTENANCE'))) {
       GlobalSecurityHandler.triggerLockdown();
     }
     if (e.message != null && e.message!.contains('401')) {
@@ -323,6 +373,11 @@ bool isValidImageUrl(String url) {
   final cleanUrl = url.trim();
   if (cleanUrl.isEmpty) return false;
 
+  // Bloquer les scripts ou données potentiellement malveillantes
+  if (cleanUrl.toLowerCase().startsWith('data:') ||
+      cleanUrl.toLowerCase().startsWith('javascript:'))
+    return false;
+
   final allowedHosts = [
     'firebasestorage.googleapis.com',
     'live.staticflickr.com',
@@ -330,6 +385,7 @@ bool isValidImageUrl(String url) {
     'wikimedia.org',
     'pixabay.com',
     'unsplash.com',
+    'lh3.googleusercontent.com', // Ajout pour les photos de profil Google
   ];
 
   final uri = Uri.tryParse(cleanUrl);
@@ -340,15 +396,7 @@ bool isValidImageUrl(String url) {
   );
   if (!isAllowedHost) return false;
 
-  // Vérifie l'extension ou le format Firebase Storage
-  final isImageFormat =
-      cleanUrl.contains('/o/') ||
-      RegExp(
-        r'\.(jpeg|jpg|png|webp|gif)(\?.*)?$',
-        caseSensitive: false,
-      ).hasMatch(cleanUrl);
-
-  return isImageFormat;
+  return true;
 }
 
 String _encodeWordSecret(String word) {
@@ -601,9 +649,7 @@ class AppBadges {
 
       if (newBadges.isNotEmpty) {
         // --- CORRECTION : Sauvegarder impérativement dans Firestore ---
-        await userRef.update({
-          'badges': FieldValue.arrayUnion(newBadges),
-        });
+        await userRef.update({'badges': FieldValue.arrayUnion(newBadges)});
 
         if (context.mounted) {
           showNewBadges(context, newBadges);
@@ -671,8 +717,8 @@ class AppBadges {
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 8,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
         childAspectRatio: 0.85,
       ),
       itemCount: allBadges.length,
@@ -686,7 +732,8 @@ class AppBadges {
             duration: const Duration(milliseconds: 300),
             opacity: isEarned ? 1.0 : 0.3,
             child: Card(
-              elevation: isEarned ? 4 : 0,
+              elevation: isEarned ? 6 : 0,
+              shadowColor: isEarned ? badgeColor : Colors.transparent,
               color:
                   isEarned
                       ? badgeColor.withValues(alpha: 0.15)
@@ -884,11 +931,21 @@ class GameResultsPage extends StatefulWidget {
 
 class _GameResultsPageState extends State<GameResultsPage> {
   bool _submitted = false;
+  late ConfettiController _confettiController;
 
   @override
   void initState() {
     super.initState();
+    _confettiController = ConfettiController(
+      duration: const Duration(seconds: 3),
+    );
     _submitOnce();
+  }
+
+  @override
+  void dispose() {
+    _confettiController.dispose();
+    super.dispose();
   }
 
   void _submitOnce() {
@@ -1143,190 +1200,225 @@ class _GameResultsPageState extends State<GameResultsPage> {
           ..sort((a, b) => b.value.compareTo(a.value));
     final int maxScore =
         sortedPlayers.isNotEmpty ? sortedPlayers.first.value : 0;
-    if (maxScore > 0) {
+    final isWinner =
+        sortedPlayers.isNotEmpty &&
+        widget.playerName != null &&
+        sortedPlayers.first.key == widget.playerName;
+
+    if (isWinner &&
+        _confettiController.state != ConfettiControllerState.playing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _confettiController.play();
+        triggerHapticSuccess();
+      });
+    } else if (maxScore > 0) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         HapticFeedback.mediumImpact();
       });
     }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Classement Final'),
-        automaticallyImplyLeading: false,
-        flexibleSpace: Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [AppColors.deepBlue, AppColors.primaryBlue],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            title: const Text('Classement Final'),
+            automaticallyImplyLeading: false,
+            flexibleSpace: Container(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [AppColors.deepBlue, AppColors.primaryBlue],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+              ),
+            ),
+          ),
+          body: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppColors.softWhite, AppColors.softWhiteAlt],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              ),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                children: [
+                  StyledCard(
+                    child: Column(
+                      children: [
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.emoji_events_rounded,
+                              color: Colors.amber,
+                              size: 30,
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'Podium',
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        _buildPodium(sortedPlayers, context),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildScoreTrendChart(sortedPlayers, context),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: sortedPlayers.length,
+                      itemBuilder: (context, index) {
+                        final playerEntry = sortedPlayers[index];
+                        final isWinner =
+                            playerEntry.value == maxScore && maxScore > 0;
+                        final List<Color> podiumColors = [
+                          Colors.amber,
+                          Colors.grey.shade400,
+                          const Color(0xFFCD7F32),
+                        ];
+                        final List<IconData> podiumIcons = [
+                          Icons.emoji_events_rounded,
+                          Icons.workspace_premium_rounded,
+                          Icons.military_tech_rounded,
+                        ];
+                        final bool isFirst = index == 0;
+                        return StyledCard(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
+                              ),
+                              child: Row(
+                                children: [
+                                  index < 3
+                                      ? Container(
+                                        width: 40,
+                                        height: 40,
+                                        decoration: BoxDecoration(
+                                          color: podiumColors[index],
+                                          shape: BoxShape.circle,
+                                        ),
+                                        child: Icon(
+                                          podiumIcons[index],
+                                          color: Colors.white,
+                                          size: 20,
+                                        ),
+                                      )
+                                      : SizedBox(
+                                        width: 40,
+                                        child: Text(
+                                          '#${index + 1}',
+                                          style: const TextStyle(
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppColors.textSecondary,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(
+                                      playerEntry.key,
+                                      style: TextStyle(
+                                        fontSize: 15,
+                                        fontWeight:
+                                            isFirst
+                                                ? FontWeight.bold
+                                                : FontWeight.normal,
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 5,
+                                    ),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          isFirst
+                                              ? Colors.amber.withOpacity(0.2)
+                                              : AppColors.primaryBlue
+                                                  .withOpacity(0.1),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      '${playerEntry.value} pts',
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight: FontWeight.bold,
+                                        color:
+                                            isFirst
+                                                ? Colors.black87
+                                                : AppColors.deepBlue,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                            .animate(delay: Duration(milliseconds: 70 * index))
+                            .fadeIn(duration: 280.ms)
+                            .moveY(begin: 16, end: 0, duration: 280.ms);
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () async {
+                        if (widget.isHost) {
+                          try {
+                            await FirebaseFirestore.instance
+                                .collection('onlineRooms')
+                                .doc(widget.roomId)
+                                .delete();
+                          } catch (e) {
+                            print(
+                              "Erreur lors de la suppression de la salle: $e",
+                            );
+                          }
+                        }
+                        Navigator.of(
+                          context,
+                        ).popUntil((route) => route.isFirst);
+                      },
+                      icon: const Icon(Icons.home_rounded),
+                      label: const Text('Retour au menu'),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
-      ),
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [AppColors.softWhite, AppColors.softWhiteAlt],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            children: [
-              StyledCard(
-                child: Column(
-                  children: [
-                    const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.emoji_events_rounded,
-                          color: Colors.amber,
-                          size: 30,
-                        ),
-                        SizedBox(width: 10),
-                        Text(
-                          'Podium',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    _buildPodium(sortedPlayers, context),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 12),
-              _buildScoreTrendChart(sortedPlayers, context),
-              const SizedBox(height: 8),
-              Expanded(
-                child: ListView.builder(
-                  itemCount: sortedPlayers.length,
-                  itemBuilder: (context, index) {
-                    final playerEntry = sortedPlayers[index];
-                    final isWinner =
-                        playerEntry.value == maxScore && maxScore > 0;
-                    final List<Color> podiumColors = [
-                      Colors.amber,
-                      Colors.grey.shade400,
-                      const Color(0xFFCD7F32),
-                    ];
-                    final List<IconData> podiumIcons = [
-                      Icons.emoji_events_rounded,
-                      Icons.workspace_premium_rounded,
-                      Icons.military_tech_rounded,
-                    ];
-                    return StyledCard(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 12,
-                          ),
-                          child: Row(
-                            children: [
-                              index < 3
-                                  ? Container(
-                                    width: 40,
-                                    height: 40,
-                                    decoration: BoxDecoration(
-                                      color: podiumColors[index],
-                                      shape: BoxShape.circle,
-                                    ),
-                                    child: Icon(
-                                      podiumIcons[index],
-                                      color: Colors.white,
-                                      size: 20,
-                                    ),
-                                  )
-                                  : SizedBox(
-                                    width: 40,
-                                    child: Text(
-                                      '#${index + 1}',
-                                      style: const TextStyle(
-                                        fontSize: 17,
-                                        fontWeight: FontWeight.bold,
-                                        color: AppColors.textSecondary,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Text(
-                                  playerEntry.key,
-                                  style: TextStyle(
-                                    fontSize: 15,
-                                    fontWeight:
-                                        isWinner
-                                            ? FontWeight.bold
-                                            : FontWeight.normal,
-                                  ),
-                                ),
-                              ),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 5,
-                                ),
-                                decoration: BoxDecoration(
-                                  color:
-                                      isWinner
-                                          ? Colors.amber.withOpacity(0.2)
-                                          : AppColors.primaryBlue.withOpacity(
-                                            0.1,
-                                          ),
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                child: Text(
-                                  '${playerEntry.value} pts',
-                                  style: TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.bold,
-                                    color:
-                                        isWinner
-                                            ? Colors.black87
-                                            : AppColors.deepBlue,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                        )
-                        .animate(delay: Duration(milliseconds: 70 * index))
-                        .fadeIn(duration: 280.ms)
-                        .moveY(begin: 16, end: 0, duration: 280.ms);
-                  },
-                ),
-              ),
-              const SizedBox(height: 16),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton.icon(
-                  onPressed: () async {
-                    if (widget.isHost) {
-                      try {
-                        await FirebaseFirestore.instance
-                            .collection('onlineRooms')
-                            .doc(widget.roomId)
-                            .delete();
-                      } catch (e) {
-                        print("Erreur lors de la suppression de la salle: $e");
-                      }
-                    }
-                    Navigator.of(context).popUntil((route) => route.isFirst);
-                  },
-                  icon: const Icon(Icons.home_rounded),
-                  label: const Text('Retour au menu'),
-                ),
-              ),
+        Align(
+          alignment: Alignment.topCenter,
+          child: ConfettiWidget(
+            confettiController: _confettiController,
+            blastDirectionality: BlastDirectionality.explosive,
+            shouldLoop: false,
+            colors: const [
+              Colors.green,
+              Colors.blue,
+              Colors.pink,
+              Colors.orange,
+              Colors.purple,
+              Colors.amber,
             ],
           ),
         ),
-      ),
+      ],
     );
   }
 }
@@ -1517,9 +1609,9 @@ void main() async {
 
     // GESTIONNAIRE D'ARRIÈRE-PLAN
     FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
-    
+
     final messaging = FirebaseMessaging.instance;
-    
+
     // 1. Demande de permission
     await messaging.requestPermission(
       alert: true,
@@ -1534,7 +1626,6 @@ void main() async {
       badge: true,
       sound: true,
     );
-
   } catch (e) {
     print("Erreur lors de l'initialisation de Firebase: $e");
   }
@@ -1565,7 +1656,8 @@ class MiniGamesApp extends StatelessWidget {
                 builder: (context, isLocked, _) {
                   if (isLocked) {
                     return const ForceUpdateScreen(
-                      message: "Votre version n'est plus autorisée par le serveur. Veuillez mettre à jour l'application sur le Store.",
+                      message:
+                          "Votre version n'est plus autorisée par le serveur. Veuillez mettre à jour l'application sur le Store.",
                       storeUrl: "https://play.google.com/store",
                       isMaintenance: false,
                       minVersion: "Dernière version requise",
@@ -2239,6 +2331,21 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _generateGames() async {
+    // Vérification connexion
+    try {
+      final result = await http
+          .get(Uri.parse('https://www.google.com'))
+          .timeout(const Duration(seconds: 2));
+      if (result.statusCode != 200) throw Exception('Pas de connexion');
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _status = 'Erreur : Veuillez vérifier votre connexion internet.';
+        });
+      }
+      return;
+    }
+
     if (_isGenerating) return;
 
     // Vérification préalable de l'authentification
@@ -2968,53 +3075,24 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     String description = item[key]?.toString().trim() ?? '';
     String source =
         item['image_source']?.toString().toLowerCase() ?? 'openverse';
-    bool fromTextFallback = false;
 
-    // Si l'IA n'a pas fourni de description d'image, on se rabat sur le texte
-    if (description.isEmpty && item['text'] != null) {
-      description = item['text'].toString().trim();
-      fromTextFallback = true;
-    }
     if (description.isEmpty) return;
 
-    // --- NETTOYAGE POUR LA RECHERCHE OPENVERSE ---
+    // Nettoyage de la requête pour Openverse
     String searchQuery = description;
-
-    if ((source == 'openverse' || source == 'pixabay') &&
-        (fromTextFallback || description.split(RegExp(r'\s+')).length > 3)) {
+    if ((source == 'openverse') &&
+        description.split(RegExp(r'\s+')).length > 3) {
       String cleanQuery = description.replaceAll(RegExp(r'[^\w\sÀ-ÿ]'), ' ');
       List<String> stopWords = [
         'le',
         'la',
         'les',
-        'l',
-        'd',
-        'de',
-        'du',
-        'des',
         'un',
         'une',
-        'qui',
-        'que',
-        'est',
-        'sont',
-        'dans',
-        'avec',
-        'et',
-        'ou',
-        'ce',
-        'cette',
-        'ces',
-        'mon',
         'the',
         'is',
         'are',
-        'in',
-        'on',
-        'of',
-        'and',
       ];
-
       List<String> words =
           cleanQuery
               .split(RegExp(r'\s+'))
@@ -3022,81 +3100,55 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                 (w) => w.length > 2 && !stopWords.contains(w.toLowerCase()),
               )
               .toList();
-
-      if (words.length > 3) {
-        words.sort((a, b) => b.length.compareTo(a.length));
-        words = words.take(3).toList();
-      }
+      if (words.length > 3) words = words.take(3).toList();
       searchQuery = words.join(' ');
     }
 
-    final bool requiresAI = (source == 'ai');
-
     try {
-      if (_isVip) {
-        if (requiresAI) {
-          if (mounted)
-            setState(() => _status = 'Génération IA pour "$description"...');
-          final callableAI = FirebaseFunctions.instance.httpsCallable(
-            'generateAIImage',
-          );
-          final resultAI = await callableAI.call({'prompt': description});
-          if (resultAI.data != null && resultAI.data['url'] != null) {
-            item['image_url'] = resultAI.data['url'];
-            return;
-          }
-        }
-
-        // CONCEPT SIMPLE -> Openverse
-        if (mounted)
-          setState(
-            () => _status = 'Recherche Openverse pour "$searchQuery"...',
-          );
-        final callableOpenverse = FirebaseFunctions.instance.httpsCallable(
-          'fetchOpenverseImage',
+      if (_isVip && source == 'ai') {
+        if (mounted) setState(() => _status = 'Génération IA...');
+        final callableAI = FirebaseFunctions.instance.httpsCallable(
+          'generateAIImage',
         );
-        final resultOpenverse = await callableOpenverse.call({
-          'query': searchQuery,
-        });
-
-        if (resultOpenverse.data != null &&
-            resultOpenverse.data['results'] != null &&
-            (resultOpenverse.data['results'] as List).isNotEmpty) {
-          item['image_url'] = resultOpenverse.data['results'][0]['url'];
-        } else if (!requiresAI) {
-          // Fallback IA si Openverse ne trouve rien
-          if (mounted)
-            setState(
-              () =>
-                  _status =
-                      'Aucun résultat. Bascule sur l\'IA pour "$description"...',
-            );
-          final callableAI = FirebaseFunctions.instance.httpsCallable(
-            'generateAIImage',
-          );
-          final resultAI = await callableAI.call({'prompt': description});
-          if (resultAI.data != null && resultAI.data['url'] != null) {
-            item['image_url'] = resultAI.data['url'];
-          }
+        // Ajout d'un timeout explicite
+        final resultAI = await callableAI
+            .call({'prompt': description})
+            .timeout(const Duration(seconds: 45));
+        if (resultAI.data != null && resultAI.data['url'] != null) {
+          item['image_url'] = resultAI.data['url'];
+          return;
         }
-      } else {
-        // NON-VIP : Banque d'images Openverse uniquement
-        if (mounted)
-          setState(
-            () => _status = 'Recherche Openverse pour "$searchQuery"...',
-          );
-        final callable = FirebaseFunctions.instance.httpsCallable(
-          'fetchOpenverseImage',
+      }
+
+      // Fallback Openverse
+      if (mounted) setState(() => _status = 'Recherche image...');
+      final callableOpenverse = FirebaseFunctions.instance.httpsCallable(
+        'fetchOpenverseImage',
+      );
+      final resultOpenverse = await callableOpenverse
+          .call({'query': searchQuery})
+          .timeout(const Duration(seconds: 10));
+
+      if (resultOpenverse.data != null &&
+          resultOpenverse.data['results'] != null &&
+          (resultOpenverse.data['results'] as List).isNotEmpty) {
+        item['image_url'] = resultOpenverse.data['results'][0]['url'];
+      } else if (_isVip && source != 'ai') {
+        // Si Openverse échoue et qu'on est VIP, on tente l'IA en secours
+        if (mounted) setState(() => _status = 'Secours IA...');
+        final callableAI = FirebaseFunctions.instance.httpsCallable(
+          'generateAIImage',
         );
-        final result = await callable.call({'query': searchQuery});
-        if (result.data != null &&
-            result.data['results'] != null &&
-            (result.data['results'] as List).isNotEmpty) {
-          item['image_url'] = result.data['results'][0]['url'];
+        final resultAI = await callableAI
+            .call({'prompt': description})
+            .timeout(const Duration(seconds: 45));
+        if (resultAI.data != null && resultAI.data['url'] != null) {
+          item['image_url'] = resultAI.data['url'];
         }
       }
     } catch (e) {
-      print('Erreur lors du traitement d\'image : $e');
+      print('Erreur image (non-bloquante) : $e');
+      // On ne crash pas l'app, l'image restera vide ou affichera un placeholder
     }
   }
 
@@ -3113,6 +3165,10 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
       }
       return;
     }
+
+    // Sauvegarde locale pour le mode hors-ligne
+    _saveQuizLocally(quizText, games, quizId);
+
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -3135,6 +3191,32 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     ).then((_) {
       _loadUserData();
     });
+  }
+
+  Future<void> _saveQuizLocally(
+    String text,
+    List<dynamic> games,
+    String? id,
+  ) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final key = 'offline_quiz_${id ?? DateTime.now().millisecondsSinceEpoch}';
+      final data = jsonEncode({
+        'text': text,
+        'games': games,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      await prefs.setString(key, data);
+
+      // Garder une liste des IDs de quiz offline
+      List<String> offlineIds = prefs.getStringList('offline_quiz_ids') ?? [];
+      if (!offlineIds.contains(key)) {
+        offlineIds.add(key);
+        await prefs.setStringList('offline_quiz_ids', offlineIds);
+      }
+    } catch (e) {
+      print('Erreur sauvegarde locale quiz: $e');
+    }
   }
 
   void _showAllQuizzes() {
@@ -3844,13 +3926,12 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
               ),
             ];
 
-    List<NavigationDestination> buildDestinationsList(int pendingFriendRequests) {
+    List<NavigationDestination> buildDestinationsList(
+      int pendingFriendRequests,
+    ) {
       if (widget.isGuest) {
         return const [
-          NavigationDestination(
-            icon: Icon(Icons.login),
-            label: 'Rejoindre',
-          ),
+          NavigationDestination(icon: Icon(Icons.login), label: 'Rejoindre'),
         ];
       }
 
@@ -3876,20 +3957,22 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           label: 'Mon QI',
         ),
         NavigationDestination(
-          icon: pendingFriendRequests > 0
-              ? Badge.count(
-                  count: pendingFriendRequests,
-                  backgroundColor: Colors.redAccent,
-                  child: const Icon(Icons.people_outline),
-                )
-              : const Icon(Icons.people_outline),
-          selectedIcon: pendingFriendRequests > 0
-              ? Badge.count(
-                  count: pendingFriendRequests,
-                  backgroundColor: Colors.redAccent,
-                  child: const Icon(Icons.people),
-                )
-              : const Icon(Icons.people),
+          icon:
+              pendingFriendRequests > 0
+                  ? Badge.count(
+                    count: pendingFriendRequests,
+                    backgroundColor: Colors.redAccent,
+                    child: const Icon(Icons.people_outline),
+                  )
+                  : const Icon(Icons.people_outline),
+          selectedIcon:
+              pendingFriendRequests > 0
+                  ? Badge.count(
+                    count: pendingFriendRequests,
+                    backgroundColor: Colors.redAccent,
+                    child: const Icon(Icons.people),
+                  )
+                  : const Icon(Icons.people),
           label: 'Amis',
         ),
       ];
@@ -4013,31 +4096,32 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           widget.isGuest
               ? null
               : StreamBuilder<QuerySnapshot>(
-                  stream: FirebaseFirestore.instance
-                      .collection('friendRequests')
-                      .where('receiverId', isEqualTo: _currentUser?.uid)
-                      .where('status', isEqualTo: 'pending')
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    final int pendingCount =
-                        snapshot.hasData ? snapshot.data!.docs.length : 0;
-                    return NavigationBar(
-                      height: 74,
-                      selectedIndex: _currentTabIndex,
-                      onDestinationSelected:
-                          (index) => setState(() => _currentTabIndex = index),
-                      labelBehavior:
-                          NavigationDestinationLabelBehavior.alwaysShow,
-                      backgroundColor:
-                          isDark ? AppColors.midnightSurface : Colors.white,
-                      indicatorColor: (isDark
-                              ? AppColors.neonCyan
-                              : AppColors.primaryBlue)
-                          .withOpacity(0.18),
-                      destinations: buildDestinationsList(pendingCount),
-                    );
-                  },
-                ),
+                stream:
+                    FirebaseFirestore.instance
+                        .collection('friendRequests')
+                        .where('receiverId', isEqualTo: _currentUser?.uid)
+                        .where('status', isEqualTo: 'pending')
+                        .snapshots(),
+                builder: (context, snapshot) {
+                  final int pendingCount =
+                      snapshot.hasData ? snapshot.data!.docs.length : 0;
+                  return NavigationBar(
+                    height: 74,
+                    selectedIndex: _currentTabIndex,
+                    onDestinationSelected:
+                        (index) => setState(() => _currentTabIndex = index),
+                    labelBehavior:
+                        NavigationDestinationLabelBehavior.alwaysShow,
+                    backgroundColor:
+                        isDark ? AppColors.midnightSurface : Colors.white,
+                    indicatorColor: (isDark
+                            ? AppColors.neonCyan
+                            : AppColors.primaryBlue)
+                        .withOpacity(0.18),
+                    destinations: buildDestinationsList(pendingCount),
+                  );
+                },
+              ),
     );
   }
 
@@ -6391,7 +6475,8 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
                           controller: _cMaxMistakes,
                           keyboardType: TextInputType.number,
                           decoration: const InputDecoration(
-                            labelText: "Nombre d'erreurs autorisées (laisser vide pour auto)",
+                            labelText:
+                                "Nombre d'erreurs autorisées (laisser vide pour auto)",
                             hintText: "Ex: 4",
                             prefixIcon: Icon(Icons.heart_broken_outlined),
                           ),
@@ -7346,7 +7431,9 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                         ),
                       ),
                       title: Text(
-                        quiz['title']?.toString() ?? quiz['text']?.toString() ?? 'Sans titre',
+                        quiz['title']?.toString() ??
+                            quiz['text']?.toString() ??
+                            'Sans titre',
                         style: TextStyle(
                           fontWeight: FontWeight.bold,
                           fontSize: 16,
@@ -7498,6 +7585,17 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
   List<Map<String, dynamic>> _filteredQuizzes = [];
   final TextEditingController _searchController = TextEditingController();
   bool _isLoading = true;
+  String _selectedTheme = 'Tous';
+  final List<String> _availableThemes = [
+    'Tous',
+    'Histoire',
+    'Sciences',
+    'Géographie',
+    'Art',
+    'Cinéma',
+    'Sport',
+    'Général',
+  ];
 
   @override
   void initState() {
@@ -7554,9 +7652,19 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
             final userName = (quiz['userName']?.toString() ?? '').toLowerCase();
             final text = (quiz['text']?.toString() ?? '').toLowerCase();
             final theme = (quiz['theme']?.toString() ?? '').toLowerCase();
-            return userName.contains(query) ||
+
+            // Filtre texte
+            final matchesText =
+                userName.contains(query) ||
                 text.contains(query) ||
                 theme.contains(query);
+
+            // Filtre thème
+            final matchesTheme =
+                _selectedTheme == 'Tous' ||
+                theme.contains(_selectedTheme.toLowerCase());
+
+            return matchesText && matchesTheme;
           }).toList();
     });
   }
@@ -7569,13 +7677,46 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
         children: [
           Padding(
             padding: const EdgeInsets.all(8.0),
-            child: TextField(
-              controller: _searchController,
-              decoration: const InputDecoration(
-                labelText: 'Rechercher par créateur, contenu ou thème',
-                border: OutlineInputBorder(),
-                prefixIcon: Icon(Icons.search),
-              ),
+            child: Column(
+              children: [
+                TextField(
+                  controller: _searchController,
+                  decoration: const InputDecoration(
+                    labelText: 'Rechercher par créateur, contenu ou thème',
+                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.search),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children:
+                        _availableThemes.map((theme) {
+                          final isSelected = _selectedTheme == theme;
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 8.0),
+                            child: ChoiceChip(
+                              label: Text(theme),
+                              selected: isSelected,
+                              onSelected: (selected) {
+                                setState(() => _selectedTheme = theme);
+                                _filterQuizzes();
+                              },
+                              selectedColor: AppColors.primaryBlue,
+                              labelStyle: TextStyle(
+                                color: isSelected ? Colors.white : null,
+                                fontWeight:
+                                    isSelected
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(
@@ -8029,13 +8170,13 @@ class _MyIQPageState extends State<MyIQPage> {
         .doc(widget.userId)
         .snapshots()
         .listen((userDoc) {
-      if (userDoc.exists && mounted) {
-        setState(() {
-          _iq = (userDoc.data()?['iq'] as num? ?? 100.0).toDouble();
-          _myBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
+          if (userDoc.exists && mounted) {
+            setState(() {
+              _iq = (userDoc.data()?['iq'] as num? ?? 100.0).toDouble();
+              _myBadges = List<String>.from(userDoc.data()?['badges'] ?? []);
+            });
+          }
         });
-      }
-    });
   }
 
   Future<void> _loadStatsAndHistory() async {
@@ -10254,6 +10395,11 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
   Map<String, dynamic>? _roomData;
   bool _gameStarted = false; // Verrou pour éviter la navigation double
 
+  // Gestion du chat
+  final TextEditingController _chatController = TextEditingController();
+  final ScrollController _chatScrollController = ScrollController();
+  late Stream<QuerySnapshot> _chatStream;
+
   @override
   void initState() {
     super.initState();
@@ -10261,8 +10407,16 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
     WidgetsBinding.instance.addObserver(this);
     _listenToRoom();
 
+    _chatStream =
+        FirebaseFirestore.instance
+            .collection('onlineRooms')
+            .doc(widget.roomId)
+            .collection('chat')
+            .orderBy('timestamp', descending: false)
+            .snapshots();
+
     if (widget.isHost) {
-      _heartbeatTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+      _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (_) {
         if (_isMounted) {
           FirebaseFirestore.instance
               .collection('onlineRooms')
@@ -10270,6 +10424,34 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
               .update({'lastHeartbeat': FieldValue.serverTimestamp()});
         }
       });
+    }
+  }
+
+  Future<void> _sendMessage() async {
+    if (_chatController.text.trim().isEmpty) return;
+    final messageText = _chatController.text.trim();
+    _chatController.clear();
+    try {
+      await FirebaseFirestore.instance
+          .collection('onlineRooms')
+          .doc(widget.roomId)
+          .collection('chat')
+          .add({
+            'message': messageText,
+            'sender': widget.playerName,
+            'timestamp': FieldValue.serverTimestamp(),
+          });
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (_chatScrollController.hasClients) {
+          _chatScrollController.animateTo(
+            _chatScrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    } catch (e) {
+      print('Erreur envoi chat: $e');
     }
   }
 
@@ -10475,6 +10657,8 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
 
   @override
   void dispose() {
+    _chatController.dispose();
+    _chatScrollController.dispose();
     _heartbeatTimer?.cancel();
     _isMounted = false;
     WidgetsBinding.instance.removeObserver(this);
@@ -10621,9 +10805,11 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              Expanded(
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 130),
                 child: Card(
                   child: ListView(
+                    shrinkWrap: true,
                     children:
                         _players.entries.map((entry) {
                           final playerData =
@@ -10631,10 +10817,12 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                           final playerName =
                               playerData['name']?.toString() ?? entry.key;
                           return ListTile(
-                            leading: const Icon(Icons.person),
+                            dense: true,
+                            leading: const Icon(Icons.person, size: 20),
                             title: Text(
                               playerName,
                               style: TextStyle(
+                                fontSize: 13,
                                 fontWeight:
                                     playerName == widget.playerName
                                         ? FontWeight.bold
@@ -10644,8 +10832,12 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                             trailing:
                                 playerData['isHost'] == true
                                     ? const Chip(
-                                      label: Text('Hôte'),
+                                      label: Text(
+                                        'Hôte',
+                                        style: TextStyle(fontSize: 10),
+                                      ),
                                       backgroundColor: Colors.amber,
+                                      visualDensity: VisualDensity.compact,
                                     )
                                     : null,
                           );
@@ -10653,7 +10845,172 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 12),
+
+              // NOUVEAU : Zone de Chat en direct
+              Expanded(
+                child: Card(
+                  elevation: 2,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: Column(
+                    children: [
+                      const Padding(
+                        padding: EdgeInsets.fromLTRB(12, 8, 12, 4),
+                        child: Row(
+                          children: [
+                            Icon(
+                              Icons.chat_bubble_outline,
+                              size: 16,
+                              color: Colors.blueAccent,
+                            ),
+                            SizedBox(width: 6),
+                            Text(
+                              'Discussion en direct',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Divider(height: 1),
+                      Expanded(
+                        child: StreamBuilder<QuerySnapshot>(
+                          stream: _chatStream,
+                          builder: (context, snapshot) {
+                            if (!snapshot.hasData) {
+                              return const Center(
+                                child: CircularProgressIndicator(),
+                              );
+                            }
+                            final messages = snapshot.data!.docs;
+                            if (messages.isEmpty) {
+                              return const Center(
+                                child: Text(
+                                  'Pas encore de message. Dites bonjour !',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.grey,
+                                  ),
+                                ),
+                              );
+                            }
+                            return ListView.builder(
+                              controller: _chatScrollController,
+                              itemCount: messages.length,
+                              itemBuilder: (context, index) {
+                                final msg =
+                                    messages[index].data()
+                                        as Map<String, dynamic>;
+                                final isMe = msg['sender'] == widget.playerName;
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8.0,
+                                    vertical: 3.0,
+                                  ),
+                                  child: Align(
+                                    alignment:
+                                        isMe
+                                            ? Alignment.centerRight
+                                            : Alignment.centerLeft,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 6,
+                                      ),
+                                      constraints: BoxConstraints(
+                                        maxWidth:
+                                            MediaQuery.of(context).size.width *
+                                            0.72,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color:
+                                            isMe
+                                                ? Colors.blueAccent.withValues(
+                                                  alpha: 0.25,
+                                                )
+                                                : Colors.grey.withValues(
+                                                  alpha: 0.2,
+                                                ),
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color:
+                                              isMe
+                                                  ? Colors.blueAccent
+                                                      .withValues(alpha: 0.5)
+                                                  : Colors.transparent,
+                                        ),
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          if (!isMe)
+                                            Text(
+                                              msg['sender']?.toString() ??
+                                                  'Joueur',
+                                              style: const TextStyle(
+                                                fontSize: 10,
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.blueAccent,
+                                              ),
+                                            ),
+                                          Text(
+                                            msg['message']?.toString() ?? '',
+                                            style: const TextStyle(
+                                              fontSize: 13,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _chatController,
+                                decoration: InputDecoration(
+                                  hintText: 'Discuter...',
+                                  isDense: true,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 8,
+                                  ),
+                                ),
+                                onSubmitted: (_) => _sendMessage(),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            IconButton(
+                              icon: const Icon(
+                                Icons.send,
+                                color: Colors.indigo,
+                              ),
+                              onPressed: _sendMessage,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
 
               if (isFull || (_countdownTimer != null))
                 Column(
@@ -11159,9 +11516,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       transaction.update(roomRef, {
         'players.$playerKey.score': FieldValue.increment(points),
-        'gameState.playersAnswered': FieldValue.arrayUnion([
-          playerKey,
-        ]),
+        'gameState.playersAnswered': FieldValue.arrayUnion([playerKey]),
       });
     });
   }
@@ -11511,7 +11866,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
           card2Index < 0 ||
           card2Index >= currentCards.length)
         return;
-      if (currentCards[card1Index] == null || currentCards[card2Index] == null) return;
+      if (currentCards[card1Index] == null || currentCards[card2Index] == null)
+        return;
 
       Map<String, dynamic> card1 = Map<String, dynamic>.from(
         currentCards[card1Index],
@@ -12473,13 +12829,17 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             child: Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
-                onTap: _localAnswerSubmitted
-                    ? null
-                    : () {
-                        _submitAnswer(valueToCompare);
-                      },
+                onTap:
+                    _localAnswerSubmitted
+                        ? null
+                        : () {
+                          _submitAnswer(valueToCompare);
+                        },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -12491,8 +12851,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                             imageUrl!,
                             height: 90,
                             fit: BoxFit.contain,
-                            errorBuilder: (context, error, stack) =>
-                                const Icon(Icons.broken_image, size: 40),
+                            errorBuilder:
+                                (context, error, stack) =>
+                                    const Icon(Icons.broken_image, size: 40),
                           ),
                         ),
                       if (showText)
@@ -13022,9 +13383,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       transaction.update(roomRef, {
         'players.$playerKey.score': FieldValue.increment(points),
-        'gameState.playersAnswered': FieldValue.arrayUnion([
-          playerKey,
-        ]),
+        'gameState.playersAnswered': FieldValue.arrayUnion([playerKey]),
       });
     });
   }
@@ -13340,19 +13699,22 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
         }
         _memoryCards.shuffle();
         final int totalPairs = _memoryCards.length ~/ 2;
-        _memoryMaxMistakes = game['maxMistakes'] != null 
-            ? int.tryParse(game['maxMistakes'].toString()) ?? (totalPairs + 2)
-            : (totalPairs + 2);
+        _memoryMaxMistakes =
+            game['maxMistakes'] != null
+                ? int.tryParse(game['maxMistakes'].toString()) ??
+                    (totalPairs + 2)
+                : (totalPairs + 2);
         _memoryCurrentMistakes = 0;
       } else if (gameType.contains('Pendu')) {
         String word = (game['word'] as String? ?? '').toUpperCase();
-        word = word.replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
-                   .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
-                   .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
-                   .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
-                   .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
-                   .replaceAll(RegExp(r'[Ç]'), 'C')
-                   .replaceAll(RegExp(r'[^A-Z]'), '');
+        word = word
+            .replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
+            .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
+            .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
+            .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
+            .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
+            .replaceAll(RegExp(r'[Ç]'), 'C')
+            .replaceAll(RegExp(r'[^A-Z]'), '');
         _penduCurrent = word.replaceAll(RegExp(r'[A-Z]'), '_');
       } else if (gameType.contains('Chronologie')) {
         _originalEvents = List<String>.from(game['events']);
@@ -13491,6 +13853,14 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
   void _finalizeAnswer(bool isCorrect, String correctAnswerText) {
     _gameTimer?.cancel();
+
+    // Feedback haptique
+    if (isCorrect) {
+      triggerHapticSuccess();
+    } else {
+      triggerHapticError();
+    }
+
     setState(() {
       _answered = true;
       if (isCorrect) {
@@ -13662,14 +14032,15 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           setState(() {
             _memoryGameOver = true;
             _currentScore += totalPairs; // Plein score
-            _feedback = 'Bravo ! Toutes les paires trouvées en faisant $_memoryCurrentMistakes erreur(s) !';
+            _feedback =
+                'Bravo ! Toutes les paires trouvées en faisant $_memoryCurrentMistakes erreur(s) !';
             _answered = true;
           });
         }
       } else {
         // Erreur : on incrémente le compteur d'erreurs
         _memoryCurrentMistakes++;
-        
+
         Future.delayed(const Duration(milliseconds: 900), () {
           if (mounted) {
             setState(() {
@@ -13681,9 +14052,11 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
               if (_memoryCurrentMistakes >= _memoryMaxMistakes) {
                 _memoryGameOver = true;
                 _answered = true;
-                final matchedPairs = _memoryCards.where((c) => c['matched']).length ~/ 2;
+                final matchedPairs =
+                    _memoryCards.where((c) => c['matched']).length ~/ 2;
                 _currentScore += matchedPairs; // Score partiel
-                _feedback = 'Échec ! Limite d\'erreurs atteinte ($_memoryCurrentMistakes/$_memoryMaxMistakes).\nVous avez trouvé $matchedPairs paire(s).';
+                _feedback =
+                    'Échec ! Limite d\'erreurs atteinte ($_memoryCurrentMistakes/$_memoryMaxMistakes).\nVous avez trouvé $matchedPairs paire(s).';
               }
             });
           }
@@ -13696,13 +14069,14 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     if (_answered || _usedLetters.contains(letter)) return;
     final game = widget.games[_currentGameIndex];
     String word = (game['word']?.toString() ?? '').toUpperCase();
-    word = word.replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
-               .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
-               .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
-               .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
-               .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
-               .replaceAll(RegExp(r'[Ç]'), 'C')
-               .replaceAll(RegExp(r'[^A-Z]'), '');
+    word = word
+        .replaceAll(RegExp(r'[ÀÁÂÃÄÅ]'), 'A')
+        .replaceAll(RegExp(r'[ÈÉÊË]'), 'E')
+        .replaceAll(RegExp(r'[ÌÍÎÏ]'), 'I')
+        .replaceAll(RegExp(r'[ÒÓÔÕÖ]'), 'O')
+        .replaceAll(RegExp(r'[ÙÚÛÜ]'), 'U')
+        .replaceAll(RegExp(r'[Ç]'), 'C')
+        .replaceAll(RegExp(r'[^A-Z]'), '');
     setState(() {
       _usedLetters.add(letter);
       if (word.contains(letter)) {
@@ -14579,7 +14953,10 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       );
     }
     if (gameType.contains('Memory')) {
-      final remainingMistakes = max(0, _memoryMaxMistakes - _memoryCurrentMistakes);
+      final remainingMistakes = max(
+        0,
+        _memoryMaxMistakes - _memoryCurrentMistakes,
+      );
       return Column(
         children: [
           // Bandeau d'information sur les essais
@@ -14587,12 +14964,16 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             margin: const EdgeInsets.only(bottom: 12),
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
-              color: remainingMistakes <= 2 
-                  ? Colors.red.withOpacity(0.1) 
-                  : Colors.indigo.withOpacity(0.08),
+              color:
+                  remainingMistakes <= 2
+                      ? Colors.red.withOpacity(0.1)
+                      : Colors.indigo.withOpacity(0.08),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(
-                color: remainingMistakes <= 2 ? Colors.red : Colors.indigo.withOpacity(0.3),
+                color:
+                    remainingMistakes <= 2
+                        ? Colors.red
+                        : Colors.indigo.withOpacity(0.3),
               ),
             ),
             child: Row(
@@ -14601,16 +14982,17 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                 Row(
                   children: [
                     Icon(
-                      Icons.favorite, 
-                      color: remainingMistakes <= 2 ? Colors.red : Colors.pink, 
-                      size: 18
+                      Icons.favorite,
+                      color: remainingMistakes <= 2 ? Colors.red : Colors.pink,
+                      size: 18,
                     ),
                     const SizedBox(width: 6),
                     Text(
                       'Erreurs permises : $remainingMistakes / $_memoryMaxMistakes',
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        color: remainingMistakes <= 2 ? Colors.red : Colors.indigo,
+                        color:
+                            remainingMistakes <= 2 ? Colors.red : Colors.indigo,
                       ),
                     ),
                   ],
@@ -14648,23 +15030,30 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                     child: Text(
                       value,
                       textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 );
               } else {
-                cardContent = const Icon(Icons.help_outline, color: Colors.white70);
+                cardContent = const Icon(
+                  Icons.help_outline,
+                  color: Colors.white70,
+                );
               }
 
               return GestureDetector(
                 onTap: () => _flipCard(index),
                 child: Card(
                   clipBehavior: Clip.antiAlias,
-                  color: card['matched']
-                      ? Colors.green.shade400
-                      : (card['flipped']
-                          ? Colors.blue.shade200
-                          : Colors.indigo.shade400),
+                  color:
+                      card['matched']
+                          ? Colors.green.shade400
+                          : (card['flipped']
+                              ? Colors.blue.shade200
+                              : Colors.indigo.shade400),
                   child: cardContent,
                 ),
               );
@@ -15252,13 +15641,17 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
             child: Card(
               clipBehavior: Clip.antiAlias,
               child: InkWell(
-                onTap: _answered
-                    ? null
-                    : () {
-                        _checkAnswer(valueToCompare);
-                      },
+                onTap:
+                    _answered
+                        ? null
+                        : () {
+                          _checkAnswer(valueToCompare);
+                        },
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -15270,8 +15663,9 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                             imageUrl!,
                             height: 90,
                             fit: BoxFit.contain,
-                            errorBuilder: (context, error, stack) =>
-                                const Icon(Icons.broken_image, size: 40),
+                            errorBuilder:
+                                (context, error, stack) =>
+                                    const Icon(Icons.broken_image, size: 40),
                           ),
                         ),
                       if (showText)
