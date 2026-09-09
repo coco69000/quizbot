@@ -10,24 +10,27 @@ jobs:
       - name: 📥 Cloner le dépôt
         uses: actions/checkout@v4
 
+      - name: 🛠️ Sélectionner Xcode 16
+        run: |
+          XCODE_PATH=$(find /Applications -maxdepth 1 -name "Xcode_16*.app" | sort -V | tail -n 1)
+          if [ -n "$XCODE_PATH" ]; then
+            sudo xcode-select -s "$XCODE_PATH/Contents/Developer"
+          elif [ -d "/Applications/Xcode_16.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_16.app/Contents/Developer
+          fi
+          xcodebuild -version
+
       - name: 🐦 Installer Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
           cache: true
 
-      - name: ⚙️ Désactiver Swift Package Manager (Force CocoaPods pour Firebase)
-        run: |
-          flutter config --no-enable-swift-package-manager
+      - name: ⚙️ Désactiver Swift Package Manager
+        run: flutter config --no-enable-swift-package-manager
 
       - name: 📦 Récupérer les dépendances Flutter
         run: flutter pub get
-
-      - name: 🍎 Installer CocoaPods
-        run: |
-          cd ios
-          pod install --repo-update
-          cd ..
 
       - name: 🔨 Compiler l'application iOS (Sans signature)
         run: flutter build ios --release --no-codesign
