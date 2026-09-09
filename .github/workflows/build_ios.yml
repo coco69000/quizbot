@@ -1,20 +1,14 @@
 name: Build iOS IPA (Unsigned for Sideloadly)
 
 on:
-  workflow_dispatch: # Permet de lancer la compilation manuellement depuis GitHub
+  workflow_dispatch:
 
 jobs:
   build-ios:
-    runs-on: macos-14 # Utilise un Mac virtuel Apple Silicon rapide dans le Cloud GitHub
+    runs-on: macos-14 # Apple Silicon M1/M2 plus récent, rapide et compatible Xcode 15/16
     steps:
       - name: 📥 Cloner le dépôt
         uses: actions/checkout@v4
-
-      - name: ☕ Configurer Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
 
       - name: 🐦 Installer Flutter
         uses: subosito/flutter-action@v2
@@ -22,10 +16,14 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: 🛠️ Pré-créer les dossiers de build (Corrige le bug rsync de Firebase)
+        run: |
+          mkdir -p build/ios/SourcePackages
+
       - name: 📦 Récupérer les dépendances Flutter
         run: flutter pub get
 
-      - name: 🍎 Installer les Pods iOS
+      - name: 🍎 Installer CocoaPods
         run: |
           cd ios
           pod install --repo-update
@@ -37,7 +35,7 @@ jobs:
       - name: 📦 Créer le fichier .IPA pour Sideloadly
         run: |
           cd build/ios/iphoneos
-          mkdir Payload
+          mkdir -p Payload
           cp -r Runner.app Payload/
           zip -r QuizBot_unsigned.ipa Payload/
           cd ../../..
