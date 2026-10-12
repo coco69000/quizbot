@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:purchases_flutter/purchases_flutter.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'l10n/app_localizations.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -310,7 +314,7 @@ Future<Map<String, dynamic>> callSecureAI({
 
     final callable = FirebaseFunctions.instance.httpsCallable(
       'generateQuiz',
-      options: HttpsCallableOptions(timeout: const Duration(seconds: 120)),
+      options: HttpsCallableOptions(timeout: const Duration(seconds: 60)),
     );
     final result = await callable.call({
       'clientBuildNumber': CURRENT_APP_BUILD_NUMBER,
@@ -380,6 +384,7 @@ bool isValidImageUrl(String url) {
 
   final allowedHosts = [
     'firebasestorage.googleapis.com',
+    'storage.googleapis.com',
     'live.staticflickr.com',
     'images.openverse.org',
     'wikimedia.org',
@@ -736,7 +741,7 @@ class AppBadges {
               shadowColor: isEarned ? badgeColor : Colors.transparent,
               color:
                   isEarned
-                      ? badgeColor.withValues(alpha: 0.15)
+                      ? badgeColor.withOpacity(0.15)
                       : Colors.grey.shade200,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(12),
@@ -824,6 +829,97 @@ class StyledCard extends StatelessWidget {
         child: BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
           child: Padding(padding: padding, child: child),
+        ),
+      ),
+    );
+  }
+}
+
+class ModernOptionTile extends StatelessWidget {
+  final String text;
+  final String? imageUrl;
+  final VoidCallback onTap;
+  final bool isSelected;
+  final bool? isCorrect;
+
+  const ModernOptionTile({
+    super.key,
+    required this.text,
+    this.imageUrl,
+    required this.onTap,
+    this.isSelected = false,
+    this.isCorrect,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    Color bgColor = isDark ? AppColors.midnightCard : Colors.white;
+    Color borderColor = isDark ? Colors.white12 : Colors.grey.shade200;
+
+    if (isCorrect != null) {
+      if (isCorrect == true) {
+        bgColor = AppColors.successGreen.withOpacity(0.18);
+        borderColor = AppColors.successGreen;
+      } else if (isSelected) {
+        bgColor = AppColors.errorRed.withOpacity(0.18);
+        borderColor = AppColors.errorRed;
+      }
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.04),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              )
+            ],
+          ),
+          child: Row(
+            children: [
+              if (imageUrl != null && imageUrl!.isNotEmpty)
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: CachedNetworkImage(
+                    imageUrl: imageUrl!,
+                    width: 50,
+                    height: 50,
+                    fit: BoxFit.cover,
+                    placeholder: (context, url) => const SizedBox(
+                      width: 50,
+                      height: 50,
+                      child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                    ),
+                    errorWidget: (context, url, error) =>
+                        const Icon(Icons.broken_image, size: 30),
+                  ),
+                ),
+              if (imageUrl != null && imageUrl!.isNotEmpty) const SizedBox(width: 14),
+              Expanded(
+                child: Text(
+                  text,
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+              if (isCorrect == true)
+                const Icon(Icons.check_circle_rounded, color: AppColors.successGreen)
+              else if (isCorrect == false && isSelected)
+                const Icon(Icons.cancel_rounded, color: AppColors.errorRed),
+            ],
+          ),
         ),
       ),
     );
@@ -1423,7 +1519,7 @@ class _GameResultsPageState extends State<GameResultsPage> {
   }
 }
 
-// â”€â”€â”€ THEME PROVIDER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── THEME PROVIDER ──────────────────────────────────────────────────────────
 class ThemeProvider extends ChangeNotifier {
   ThemeMode _themeMode = ThemeMode.system;
   ThemeMode get themeMode => _themeMode;
@@ -1456,18 +1552,33 @@ class ThemeProvider extends ChangeNotifier {
 }
 
 class LocaleProvider extends ChangeNotifier {
+  static const supportedLanguages = [
+    'en',
+    'fr',
+    'es',
+    'de',
+    'it',
+    'pt',
+    'nl',
+    'pl',
+    'uk',
+    'ru',
+    'sv',
+  ];
+
   String _locale = 'fr'; // Par défaut
   String get locale => _locale;
 
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.containsKey('app_lang')) {
-      _locale = prefs.getString('app_lang')!;
+      final saved = prefs.getString('app_lang')!;
+      _locale = supportedLanguages.contains(saved) ? saved : 'en';
     } else {
       try {
         final sysLang =
             WidgetsBinding.instance.platformDispatcher.locale.languageCode;
-        _locale = ['fr', 'en', 'es'].contains(sysLang) ? sysLang : 'en';
+        _locale = supportedLanguages.contains(sysLang) ? sysLang : 'en';
       } catch (e) {
         _locale = 'fr';
       }
@@ -1477,6 +1588,7 @@ class LocaleProvider extends ChangeNotifier {
   }
 
   Future<void> setLocale(String lang) async {
+    if (!supportedLanguages.contains(lang)) return;
     _locale = lang;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
@@ -1484,7 +1596,7 @@ class LocaleProvider extends ChangeNotifier {
   }
 }
 
-// â”€â”€â”€ THEME HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─── THEME HELPERS ───────────────────────────────────────────────────────────
 ThemeData _buildLightTheme() {
   const seedColor = AppColors.primaryBlue;
   final cs = ColorScheme.fromSeed(
@@ -1592,7 +1704,29 @@ ThemeData _buildDarkTheme() {
   );
 }
 
-// â”€â”€â”€ MAIN â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+Future<void> initializeRevenueCat([String? userId]) async {
+  await Purchases.setLogLevel(kReleaseMode ? LogLevel.info : LogLevel.debug);
+
+  late String apiKey;
+  if (Platform.isAndroid) {
+    // Clé de production Google Play pour QuizQI
+    apiKey = 'goog_CiuDYrNYGISkmjqKNMaOnBnMHcw';
+  } else if (Platform.isIOS) {
+    // Clé pour iOS
+    apiKey = 'appl_VOTRE_CLE_PRODUCTION_IOS';
+  } else {
+    return;
+  }
+
+  PurchasesConfiguration configuration = PurchasesConfiguration(apiKey);
+  if (userId != null && userId.isNotEmpty) {
+    configuration.appUserID = userId; // Associe l'achat au compte Firebase
+  }
+
+  await Purchases.configure(configuration);
+}
+
+// ─── MAIN ─────────────────────────────────────────────────────────────
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   try {
@@ -1626,8 +1760,10 @@ void main() async {
       badge: true,
       sound: true,
     );
+
+    await initializeRevenueCat();
   } catch (e) {
-    print("Erreur lors de l'initialisation de Firebase: $e");
+    print("Erreur lors de l'initialisation: $e");
   }
   runApp(const MiniGamesApp());
 }
@@ -1642,10 +1778,18 @@ class MiniGamesApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
         ChangeNotifierProvider(create: (_) => LocaleProvider()..init()),
       ],
-      child: Consumer<ThemeProvider>(
-        builder: (context, themeProvider, _) {
+      child: Consumer2<ThemeProvider, LocaleProvider>(
+        builder: (context, themeProvider, localeProvider, _) {
           return MaterialApp(
             title: 'QuizBot',
+            locale: Locale(localeProvider.locale),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: AppLocalizations.supportedLocales,
             themeMode: themeProvider.themeMode,
             theme: _buildLightTheme(),
             darkTheme: _buildDarkTheme(),
@@ -1694,9 +1838,10 @@ class _AuthWrapperState extends State<AuthWrapper> {
           );
         }
         if (snapshot.hasData) {
-          // ENREGISTREMENT AUTOMATIQUE DU TOKEN FCM A LA CONNEXION
+          // ENREGISTREMENT AUTOMATIQUE DU TOKEN FCM A LA CONNEXION & REVENUECAT
           WidgetsBinding.instance.addPostFrameCallback((_) {
             setupFCMToken();
+            Purchases.logIn(snapshot.data!.uid);
           });
           return const HomePage();
         }
@@ -1720,6 +1865,7 @@ class _AuthPageState extends State<AuthPage> {
   bool _isLogin = true;
   String? _errorMessage;
   bool _isLoading = false;
+  bool _acceptedTerms = false;
 
   Future<void> _authenticate() async {
     setState(() {
@@ -1734,6 +1880,15 @@ class _AuthPageState extends State<AuthPage> {
           password: _passwordController.text.trim(),
         );
       } else {
+        if (!_acceptedTerms) {
+          setState(() {
+            _errorMessage =
+                "Veuillez accepter les Conditions d'Utilisation et la Politique de Confidentialité.";
+            _isLoading = false;
+          });
+          return;
+        }
+
         final pwd = _passwordController.text;
         if (pwd.length < 8) {
           setState(() {
@@ -1793,6 +1948,7 @@ class _AuthPageState extends State<AuthPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final gradientColors =
         isDark
@@ -1802,7 +1958,7 @@ class _AuthPageState extends State<AuthPage> {
     return Scaffold(
       appBar: AppBar(
         title: Text(
-          _isLogin ? 'Connexion' : 'Inscription',
+          _isLogin ? l10n.login : l10n.register,
           style: const TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
@@ -1846,7 +2002,7 @@ class _AuthPageState extends State<AuthPage> {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    _isLogin ? 'Bienvenue !' : 'Créez votre compte',
+                    _isLogin ? l10n.welcome : l10n.createAccount,
                     style: TextStyle(
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
@@ -1857,9 +2013,9 @@ class _AuthPageState extends State<AuthPage> {
                   if (!_isLogin) ...[
                     TextField(
                       controller: _usernameController,
-                      decoration: const InputDecoration(
-                        labelText: 'Nom d\'utilisateur',
-                        prefixIcon: Icon(Icons.person),
+                      decoration: InputDecoration(
+                        labelText: l10n.username,
+                        prefixIcon: const Icon(Icons.person),
                       ),
                       keyboardType: TextInputType.text,
                     ),
@@ -1867,22 +2023,75 @@ class _AuthPageState extends State<AuthPage> {
                   ],
                   TextField(
                     controller: _emailController,
-                    decoration: const InputDecoration(
-                      labelText: 'Email',
-                      prefixIcon: Icon(Icons.email),
+                    decoration: InputDecoration(
+                      labelText: l10n.email,
+                      prefixIcon: const Icon(Icons.email),
                     ),
                     keyboardType: TextInputType.emailAddress,
                   ),
                   const SizedBox(height: 16),
                   TextField(
                     controller: _passwordController,
-                    decoration: const InputDecoration(
-                      labelText: 'Mot de passe',
-                      prefixIcon: Icon(Icons.lock),
+                    decoration: InputDecoration(
+                      labelText: l10n.password,
+                      prefixIcon: const Icon(Icons.lock),
                     ),
                     obscureText: true,
                   ),
                   const SizedBox(height: 24),
+                  if (!_isLogin) ...[
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Checkbox(
+                          value: _acceptedTerms,
+                          onChanged: (val) {
+                            setState(() => _acceptedTerms = val ?? false);
+                          },
+                        ),
+                        Expanded(
+                          child: Wrap(
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              const Text("J'accepte les ", style: TextStyle(fontSize: 12)),
+                              GestureDetector(
+                                onTap: () => launchUrl(
+                                  Uri.parse("https://parrel.vercel.app/quizbot/terms"),
+                                  mode: LaunchMode.externalApplication,
+                                ),
+                                child: const Text(
+                                  "Conditions d'Utilisation",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.blue,
+                                    fontWeight: FontWeight.bold,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ),
+                              const Text(" et la ", style: TextStyle(fontSize: 12)),
+                              GestureDetector(
+                                onTap: () => launchUrl(
+                                  Uri.parse("https://parrel.vercel.app/quizbot/privacy"),
+                                  mode: LaunchMode.externalApplication,
+                                ),
+                                child: const Text(
+                                  "Politique de Confidentialité",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: Colors.blue,
+                                    fontWeight: FontWeight.bold,
+                                    decoration: TextDecoration.underline,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   if (_errorMessage != null)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16.0),
@@ -1902,7 +2111,7 @@ class _AuthPageState extends State<AuthPage> {
                         child: ElevatedButton(
                           onPressed: _authenticate,
                           child: Text(
-                            _isLogin ? 'Se connecter' : 'S\'inscrire',
+                            _isLogin ? l10n.login : l10n.register,
                           ),
                         ),
                       ),
@@ -1916,8 +2125,8 @@ class _AuthPageState extends State<AuthPage> {
                     },
                     child: Text(
                       _isLogin
-                          ? 'Pas encore de compte ? S\'inscrire'
-                          : 'Déjà un compte ? Se connecter',
+                          ? l10n.noAccount
+                          : l10n.haveAccount,
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -1925,7 +2134,71 @@ class _AuthPageState extends State<AuthPage> {
                   SizedBox(
                     width: double.infinity,
                     child: OutlinedButton.icon(
-                      onPressed: () {
+                      onPressed: () async {
+                        if (!_acceptedTerms) {
+                          final accept = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: const Text("Conditions d'utilisation (EULA)"),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    "Pour accéder au jeu en ligne, vous devez accepter nos Conditions d'Utilisation et notre Politique de Confidentialité. Tout contenu répréhensible ou comportement abusif (chat, pseudos) fait l'objet d'une tolérance zéro et d'un bannissement immédiat.",
+                                    style: TextStyle(fontSize: 13, height: 1.4),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  GestureDetector(
+                                    onTap: () => launchUrl(
+                                      Uri.parse("https://parrel.vercel.app/quizbot/terms"),
+                                      mode: LaunchMode.externalApplication,
+                                    ),
+                                    child: const Text(
+                                      "Consulter les Conditions Générales d'Utilisation",
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.blue,
+                                        fontWeight: FontWeight.bold,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 8),
+                                  GestureDetector(
+                                    onTap: () => launchUrl(
+                                      Uri.parse("https://parrel.vercel.app/quizbot/privacy"),
+                                      mode: LaunchMode.externalApplication,
+                                    ),
+                                    child: const Text(
+                                      "Consulter la Politique de Confidentialité",
+                                      style: TextStyle(
+                                        fontSize: 13,
+                                        color: Colors.blue,
+                                        fontWeight: FontWeight.bold,
+                                        decoration: TextDecoration.underline,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text("Refuser"),
+                                ),
+                                ElevatedButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text("J'accepte"),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (accept != true || !context.mounted) return;
+                          setState(() => _acceptedTerms = true);
+                        }
+
+                        if (!context.mounted) return;
                         Navigator.of(context).push(
                           MaterialPageRoute(
                             builder: (context) => const HomePage(isGuest: true),
@@ -1933,7 +2206,7 @@ class _AuthPageState extends State<AuthPage> {
                         );
                       },
                       icon: const Icon(Icons.gamepad),
-                      label: const Text('Rejoindre avec un code'),
+                      label: Text(l10n.joinWithCode),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: cs.primary,
                         side: BorderSide(color: cs.primary),
@@ -1955,6 +2228,7 @@ class _AuthPageState extends State<AuthPage> {
       ),
     );
   }
+
 }
 
 class HomePage extends StatefulWidget {
@@ -2037,6 +2311,7 @@ class _HomePageState extends State<HomePage> {
   List<dynamic> _generatedGames = [];
   String? _lastGeneratedQuizId;
   String _savedName = '';
+  String? _savedPhotoUrl;
   int? _memoryPairs;
   bool _aiDecidePairs = true;
   int _score = 0;
@@ -2058,6 +2333,7 @@ class _HomePageState extends State<HomePage> {
 
   bool _globalTimerEnabled = false;
   bool _aiCustomTimers = false;
+  StreamSubscription<DocumentSnapshot>? _userDocSubscription;
 
   @override
   void initState() {
@@ -2066,6 +2342,30 @@ class _HomePageState extends State<HomePage> {
     if (widget.isGuest) {
       _currentTabIndex =
           0; // <--- CORRIGÉ : 0 = la page pour rejoindre en ligne
+    } else if (_currentUser != null) {
+      _userDocSubscription = FirebaseFirestore.instance
+          .collection('users')
+          .doc(_currentUser!.uid)
+          .snapshots()
+          .listen((snapshot) {
+        if (snapshot.exists && mounted) {
+          final data = snapshot.data() as Map<String, dynamic>?;
+          if (data != null) {
+            setState(() {
+              if (data['username'] != null && data['username'].toString().isNotEmpty) {
+                _savedName = data['username'].toString();
+                _nameController.text = _savedName;
+              }
+              if (data['photoUrl'] != null && data['photoUrl'].toString().isNotEmpty) {
+                _savedPhotoUrl = data['photoUrl'].toString();
+              }
+              if (data['score'] != null) {
+                _score = (data['score'] as num).toInt();
+              }
+            });
+          }
+        }
+      });
     }
     _loadUserData();
     setupFCMToken();
@@ -2073,6 +2373,7 @@ class _HomePageState extends State<HomePage> {
 
   @override
   void dispose() {
+    _userDocSubscription?.cancel();
     _titleController.dispose();
     _textController.dispose();
     _nameController.dispose();
@@ -2100,7 +2401,9 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
+    _currentUser = FirebaseAuth.instance.currentUser;
     if (_currentUser != null) {
+      _savedPhotoUrl = _currentUser?.photoURL;
       String? displayName = _currentUser?.displayName;
       if (displayName != null && displayName.isNotEmpty) {
         if (mounted) {
@@ -2135,11 +2438,31 @@ class _HomePageState extends State<HomePage> {
 
             _checkAndResetGenerationCounts(data);
 
-            if (displayName == null || displayName.isEmpty) {
-              _savedName = data['username'] ?? 'Utilisateur';
+            if (data['username'] != null && data['username'].toString().isNotEmpty) {
+              _savedName = data['username'].toString();
+              _nameController.text = _savedName;
+            } else if (displayName == null || displayName.isEmpty) {
+              _savedName = 'Utilisateur';
               _nameController.text = _savedName;
             }
+
+            if (data['photoUrl'] != null && data['photoUrl'].toString().isNotEmpty) {
+              _savedPhotoUrl = data['photoUrl'].toString();
+            }
           });
+        }
+
+        // Vérification du statut VIP auprès de RevenueCat
+        try {
+          final customerInfo = await Purchases.getCustomerInfo();
+          final isVipActive = customerInfo.entitlements.all['vip']?.isActive ?? 
+                              customerInfo.entitlements.all['QuizQI Pro']?.isActive ?? 
+                              false;
+          if (mounted) {
+            setState(() => _isVip = isVipActive);
+          }
+        } catch (e) {
+          print("Erreur vérification VIP RevenueCat: $e");
         }
       } catch (e) {
         print('Erreur lors du chargement des données utilisateur: $e');
@@ -2247,6 +2570,7 @@ class _HomePageState extends State<HomePage> {
         'submitGameResult',
       );
       final result = await callable.call({
+        'clientBuildNumber': CURRENT_APP_BUILD_NUMBER,
         'gameType': 'solo',
         'quizId': quizId,
         'gamesPlayed': gamesPlayed,
@@ -2287,8 +2611,9 @@ class _HomePageState extends State<HomePage> {
   Future<String?> _saveQuizToFirestore(
     String name,
     String text,
-    List<dynamic> games,
-  ) async {
+    List<dynamic> games, {
+    String? theme,
+  }) async {
     if (widget.isGuest) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -2298,7 +2623,7 @@ class _HomePageState extends State<HomePage> {
       return null;
     }
     try {
-      final theme = await extractThemeFromQuizText(text);
+      theme ??= await extractThemeFromQuizText(text);
       final quizRef = FirebaseFirestore.instance.collection('quizzes').doc();
       await quizRef.set({
         'quizId': quizRef.id,
@@ -2331,7 +2656,14 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _generateGames() async {
-    // Vérification connexion
+    // 1. Anti double-clic immédiat : verrouillage synchrone instantané
+    if (_isGenerating) return;
+    setState(() {
+      _isGenerating = true;
+      _status = 'Vérification de la connexion...';
+    });
+
+    // 2. Vérification connexion
     try {
       final result = await http
           .get(Uri.parse('https://www.google.com'))
@@ -2341,17 +2673,17 @@ class _HomePageState extends State<HomePage> {
       if (mounted) {
         setState(() {
           _status = 'Erreur : Veuillez vérifier votre connexion internet.';
+          _isGenerating = false;
         });
       }
       return;
     }
 
-    if (_isGenerating) return;
-
-    // Vérification préalable de l'authentification
+    // 3. Vérification préalable de l'authentification
     if (widget.isGuest || FirebaseAuth.instance.currentUser == null) {
       setState(() {
         _status = 'Veuillez vous connecter pour générer des quiz avec l\'IA.';
+        _isGenerating = false;
       });
       return;
     }
@@ -2368,17 +2700,19 @@ class _HomePageState extends State<HomePage> {
     if (text.isEmpty) {
       setState(() {
         _status = 'Veuillez entrer du texte.';
+        _isGenerating = false;
       });
       return;
     }
     if (!_aiDecideGames && selectedGameNames.isEmpty) {
       setState(() {
         _status = 'Veuillez sélectionner au moins un jeu ou activer l\'IA.';
+        _isGenerating = false;
       });
       return;
     }
 
-    // Vérification des limites de génération
+    // 4. Vérification des limites de génération
     final bool canGenerate =
         _isVip
             ? (_dailyGenerationsCount < 30)
@@ -2410,6 +2744,7 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _status =
             'Vous avez atteint votre limite de générations. Devenez VIP ou attendez le mois prochain.';
+        _isGenerating = false;
       });
       return;
     }
@@ -2418,12 +2753,12 @@ class _HomePageState extends State<HomePage> {
       setState(() {
         _status =
             'Vous avez atteint votre limite de générations d\'images (20/jour).';
+        _isGenerating = false;
       });
       return;
     }
 
     setState(() {
-      _isGenerating = true;
       _status = '1/5 : Génération de la structure du quiz...';
     });
 
@@ -2503,7 +2838,7 @@ class _HomePageState extends State<HomePage> {
     try {
       String systemPromptContent = '''
 Tu es un concepteur de quiz éducatifs très créatif et imprévisible. 
-IMPORTANT : Tu dois retourner un OBJET JSON unique avec exactement deux clés : "title" (un titre court, accrocheur et pertinent de 3 à 6 mots) et "games" (le tableau des jeux).
+IMPORTANT : Tu dois retourner un OBJET JSON unique avec exactement trois clés : "title" (un titre court, accrocheur et pertinent de 3 à 6 mots), "theme" (choisi parmi: Histoire, Géographie, Sciences, Art, Cinéma, Sports, Littérature, Musique, Animaux, Cuisine, Technologie, Général) et "games" (le tableau des jeux).
 Ta mission est de transformer le texte fourni en un QUIZ au format JSON valide.
 
 Types de jeux autorisés : $allowedTypesText.
@@ -2570,14 +2905,19 @@ ${(includeAll || (_selectedGames['Quiz Éclair'] ?? false)) ? '- "Quiz Éclair":
 Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 ''';
 
+      if (_isVip) {
+        systemPromptContent += '''
+\nRÈGLE PRIVILÈGE VIP (ILLUSTRATION DU QUIZ) :
+- En tant que membre VIP, l'utilisateur a accès aux visuels IA et Openverse. Pour les jeux visuels (QCM, Memory, Relier), n'hésite pas à inclure des champs "image_description" (description précise en anglais) et "image_source" ("openverse" ou "ai") sur les questions ou paires pour enrichir le quiz de visuels captivants.
+''';
+      }
+
       print(
         '''\n[API_PROMPT] --- Prompt système envoyé à l'IA --- \n$systemPromptContent\n---------------------------------------------\n''',
       );
 
-      bool imageRequested = false;
-      if (_aiDecideGames) {
-        imageRequested = _isVip;
-      } else {
+      bool imageRequested = _isVip;
+      if (!imageRequested) {
         if (_selectedGames['QCM'] == true) {
           if (_qcmQuestionMode != DisplayMode.text ||
               _qcmAnswerMode != DisplayMode.text) {
@@ -2632,17 +2972,17 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         String jsonSubstring = cleanedContent;
         int firstBracket = cleanedContent.indexOf('[');
         int lastBracket = cleanedContent.lastIndexOf(']');
-        if (firstBracket != -1 && lastBracket > firstBracket) {
+        int firstBrace = cleanedContent.indexOf('{');
+        int lastBrace = cleanedContent.lastIndexOf('}');
+
+        // Priorité à l'objet JSON complet {...} s'il commence avant le crochet
+        if (firstBrace != -1 && (firstBracket == -1 || firstBrace < firstBracket) && lastBrace > firstBrace) {
+          jsonSubstring = cleanedContent.substring(firstBrace, lastBrace + 1);
+        } else if (firstBracket != -1 && lastBracket > firstBracket) {
           jsonSubstring = cleanedContent.substring(
             firstBracket,
             lastBracket + 1,
           );
-        } else {
-          int firstBrace = cleanedContent.indexOf('{');
-          int lastBrace = cleanedContent.lastIndexOf('}');
-          if (firstBrace != -1 && lastBrace > firstBrace) {
-            jsonSubstring = cleanedContent.substring(firstBrace, lastBrace + 1);
-          }
         }
 
         dynamic decodedJson;
@@ -2656,10 +2996,15 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         print("[JSON_PARSE] La réponse JSON a été parsée avec succès.");
 
         List<dynamic> gamesList;
+        String? generatedTheme;
         if (decodedJson is Map && decodedJson.containsKey('games')) {
           if (decodedJson['title'] != null &&
               _titleController.text.trim().isEmpty) {
             _titleController.text = decodedJson['title'].toString();
+          }
+          if (decodedJson['theme'] != null) {
+            generatedTheme = decodedJson['theme'].toString().trim();
+            print("[THEME_EXTRAIT] Thème reçu directement dans le quiz: '$generatedTheme'");
           }
           gamesList = decodedJson['games'] as List<dynamic>;
         } else if (decodedJson is List) {
@@ -2756,6 +3101,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                     : (_currentUser?.displayName ?? "Anonyme")),
             text,
             _generatedGames,
+            theme: generatedTheme,
           );
         }
 
@@ -3035,7 +3381,22 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
     }
 
     if (itemsToProcess.isNotEmpty) {
-      print('>>> Total d\'images à traiter trouvé : ${itemsToProcess.length}');
+      // Plafond raisonnable : limiter à 6 images max par quiz pour couvrir un QCM complet (question + 4 options) ou Memory
+      if (itemsToProcess.length > 6) {
+        itemsToProcess = itemsToProcess.take(6).toList();
+      }
+
+      // Protection anti-surfacturation FLUX : plafonner à 1 seule image IA payante par quiz, le reste bascule sur Openverse gratuit
+      int aiImagesCount = 0;
+      for (var item in itemsToProcess) {
+        if (item['image_source']?.toString().toLowerCase() == 'ai') {
+          aiImagesCount++;
+          if (aiImagesCount > 1) {
+            item['image_source'] = 'openverse';
+          }
+        }
+      }
+      print('>>> Total d\'images à traiter (plafonné à 6 max, 1 IA max) : ${itemsToProcess.length}');
 
       // Traiter par lots de 3 pour éviter le timeout
       const int chunkSize = 3;
@@ -3120,7 +3481,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         }
       }
 
-      // Fallback Openverse
+      // Recherche Openverse
       if (mounted) setState(() => _status = 'Recherche image...');
       final callableOpenverse = FirebaseFunctions.instance.httpsCallable(
         'fetchOpenverseImage',
@@ -3133,19 +3494,9 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
           resultOpenverse.data['results'] != null &&
           (resultOpenverse.data['results'] as List).isNotEmpty) {
         item['image_url'] = resultOpenverse.data['results'][0]['url'];
-      } else if (_isVip && source != 'ai') {
-        // Si Openverse échoue et qu'on est VIP, on tente l'IA en secours
-        if (mounted) setState(() => _status = 'Secours IA...');
-        final callableAI = FirebaseFunctions.instance.httpsCallable(
-          'generateAIImage',
-        );
-        final resultAI = await callableAI
-            .call({'prompt': description})
-            .timeout(const Duration(seconds: 45));
-        if (resultAI.data != null && resultAI.data['url'] != null) {
-          item['image_url'] = resultAI.data['url'];
-        }
       }
+      // NOTE DE SÉCURITÉ : Pas de repli automatique vers l'IA FLUX payante ici si Openverse échoue.
+      // Cela évite de vider le quota VIP ou de gonfler les coûts d'API par surprise.
     } catch (e) {
       print('Erreur image (non-bloquante) : $e');
       // On ne crash pas l'app, l'image restera vide ou affichera un placeholder
@@ -3448,8 +3799,18 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
 
     try {
       final code = _generateInviteCode();
-      final String hostUid =
-          _currentUser?.uid ?? 'guest_${DateTime.now().millisecondsSinceEpoch}';
+      _currentUser ??= FirebaseAuth.instance.currentUser;
+      String? persistentHostUid = _currentUser?.uid;
+      if (persistentHostUid == null) {
+        final prefs = await SharedPreferences.getInstance();
+        persistentHostUid = prefs.getString('guest_persistent_uid');
+        if (persistentHostUid == null) {
+          persistentHostUid =
+              'guest_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+          await prefs.setString('guest_persistent_uid', persistentHostUid);
+        }
+      }
+      final String hostUid = persistentHostUid;
 
       DocumentReference roomRef = await FirebaseFirestore.instance
           .collection('onlineRooms')
@@ -3460,7 +3821,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
             'quizText': quizText,
             'theme': theme,
             'settings': settings.toMap(),
-            'games': gamesList,
+            'games': _sanitizeGamesForMultiplayer(gamesList),
             'lastHeartbeat': FieldValue.serverTimestamp(),
             'players': {
               hostUid: {
@@ -3598,8 +3959,18 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
         finalPlayerName = pseudo.trim();
       }
 
-      final String playerUid =
-          _currentUser?.uid ?? 'guest_${DateTime.now().millisecondsSinceEpoch}';
+      _currentUser ??= FirebaseAuth.instance.currentUser;
+      String? persistentPlayerUid = _currentUser?.uid;
+      if (persistentPlayerUid == null) {
+        final prefs = await SharedPreferences.getInstance();
+        persistentPlayerUid = prefs.getString('guest_persistent_uid');
+        if (persistentPlayerUid == null) {
+          persistentPlayerUid =
+              'guest_${DateTime.now().millisecondsSinceEpoch}_${Random().nextInt(9999)}';
+          await prefs.setString('guest_persistent_uid', persistentPlayerUid);
+        }
+      }
+      final String playerUid = persistentPlayerUid;
 
       await FirebaseFirestore.instance.runTransaction((transaction) async {
         final snapshot = await transaction.get(roomDoc.reference);
@@ -3749,41 +4120,61 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
       builder:
           (context) => AlertDialog(
             title: const Text('Devenez VIP !'),
-            content: const SingleChildScrollView(
+            content: SingleChildScrollView(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
+                  const Text(
                     'Débloquez des fonctionnalités exclusives :',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
-                  SizedBox(height: 10),
-                  ListTile(
+                  const SizedBox(height: 10),
+                  const ListTile(
                     leading: Icon(Icons.star, color: Colors.amber),
                     title: Text(
                       'Prompt de génération illimité (au lieu de 2000 caractères)',
                     ),
                   ),
-                  ListTile(
+                  const ListTile(
                     leading: Icon(Icons.casino, color: Colors.green),
                     title: Text(
                       'Combinez un nombre illimité de jeux par quiz (au lieu de 3)',
                     ),
                   ),
-                  ListTile(
+                  const ListTile(
                     leading: Icon(Icons.image, color: Colors.blue),
                     title: Text('Génération de quiz avec images activée'),
                   ),
-                  ListTile(
+                  const ListTile(
                     leading: Icon(Icons.all_inclusive, color: Colors.purple),
                     title: Text(
                       'Génération de jeux illimitée (30/jour max, dont 20 avec images)',
                     ),
                   ),
-                  SizedBox(height: 20),
-                  Text(
-                    'Abonnez-vous maintenant pour une expérience premium !',
-                    style: TextStyle(fontStyle: FontStyle.italic),
+                  const Divider(),
+                  const Text(
+                    "L'abonnement est sans engagement et se renouvelle automatiquement chaque mois. Vous pouvez l'annuler à tout moment dans les paramètres de votre compte Store.",
+                    style: TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      TextButton(
+                        onPressed: () => launchUrl(
+                          Uri.parse("https://parrel.vercel.app/quizbot/terms"),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                        child: const Text("Conditions (EULA)", style: TextStyle(fontSize: 11)),
+                      ),
+                      TextButton(
+                        onPressed: () => launchUrl(
+                          Uri.parse("https://parrel.vercel.app/quizbot/privacy"),
+                          mode: LaunchMode.externalApplication,
+                        ),
+                        child: const Text("Confidentialité", style: TextStyle(fontSize: 11)),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -3795,10 +4186,10 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
               ),
               ElevatedButton(
                 onPressed: () {
-                  _activateVipSubscription();
                   Navigator.of(context).pop();
+                  _activateVipSubscription();
                 },
-                child: const Text('S\'abonner (Simulé)'),
+                child: const Text('S\'abonner au VIP'),
               ),
             ],
           ),
@@ -3806,76 +4197,86 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
   }
 
   Future<void> _activateVipSubscription() async {
-    if (_currentUser == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connectez-vous pour devenir VIP !')),
-      );
-      return;
-    }
     try {
-      final callable = FirebaseFunctions.instance.httpsCallable('activateVip');
-      await callable.call({'isVip': true});
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Félicitations ! Vous êtes maintenant un membre VIP !'),
-        ),
-      );
-      _loadUserData();
+      Offerings offerings = await Purchases.getOfferings();
+      if (offerings.current != null && offerings.current!.availablePackages.isNotEmpty) {
+        // Prend le premier forfait disponible (Mensuel)
+        Package packageToBuy = offerings.current!.availablePackages.first;
+        
+        final dynamic purchaseRes = await Purchases.purchasePackage(packageToBuy);
+        final CustomerInfo customerInfo = (purchaseRes is CustomerInfo)
+            ? purchaseRes
+            : (purchaseRes as dynamic).customerInfo;
+        
+        final isVipActive = customerInfo.entitlements.all['vip']?.isActive ?? 
+                            customerInfo.entitlements.all['QuizQI Pro']?.isActive ?? 
+                            false;
+
+        if (isVipActive) {
+          // Le statut VIP sur Firestore est synchronisé via le webhook serveur RevenueCat
+          if (mounted) {
+            setState(() => _isVip = true);
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text('Félicitations ! Vous êtes désormais VIP !'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+          _loadUserData();
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Aucune offre disponible pour le moment.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Erreur lors de l\'activation VIP : $e')),
-      );
+      print("Erreur lors de l'achat RevenueCat : $e");
     }
   }
 
   Future<void> _cancelVipSubscription() async {
-    if (_currentUser == null) return;
+    final isIOS = Platform.isIOS;
+    final url = isIOS
+        ? 'https://apps.apple.com/account/subscriptions'
+        : 'https://play.google.com/store/account/subscriptions';
 
     final confirm = await showDialog<bool>(
       context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text('Confirmation'),
-            content: const Text(
-              'Êtes-vous sûr de vouloir vous désabonner ? Vous perdrez immédiatement l\'accès à tous les avantages VIP.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(false),
-                child: const Text('Annuler'),
-              ),
-              ElevatedButton(
-                onPressed: () => Navigator.of(context).pop(true),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text('Se désabonner'),
-              ),
-            ],
+      builder: (context) => AlertDialog(
+        title: const Text('Gérer l\'abonnement'),
+        content: Text(
+          isIOS
+              ? 'Pour résilier ou modifier votre abonnement, accédez aux réglages de votre compte Apple.'
+              : 'Pour résilier ou modifier votre abonnement, accédez aux paramètres de Google Play.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Fermer'),
           ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text(isIOS ? 'Ouvrir l\'App Store' : 'Ouvrir Google Play'),
+          ),
+        ],
+      ),
     );
 
     if (confirm == true) {
-      try {
-        final callable = FirebaseFunctions.instance.httpsCallable(
-          'activateVip',
-        );
-        await callable.call({'isVip': false});
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Vous avez bien été désabonné.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
-        _loadUserData();
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Erreur lors du désabonnement : $e')),
-        );
+      final uri = Uri.parse(url);
+      if (await canLaunchUrl(uri)) {
+        await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final int nonVipGenerationsRemaining = 20 - _monthlyGenerationsCount;
     final int vipGenerationsRemaining = 30 - _dailyGenerationsCount;
     final int vipImageGenerationsRemaining = 20 - _dailyImageGenerationsCount;
@@ -3936,25 +4337,25 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
       }
 
       return [
-        const NavigationDestination(
-          icon: Icon(Icons.create_outlined),
-          selectedIcon: Icon(Icons.create),
-          label: 'Créer',
+        NavigationDestination(
+          icon: const Icon(Icons.create_outlined),
+          selectedIcon: const Icon(Icons.create),
+          label: l10n.createTab,
         ),
-        const NavigationDestination(
-          icon: Icon(Icons.extension_outlined),
-          selectedIcon: Icon(Icons.extension),
-          label: 'Mes Jeux',
+        NavigationDestination(
+          icon: const Icon(Icons.extension_outlined),
+          selectedIcon: const Icon(Icons.extension),
+          label: l10n.myGamesTab,
         ),
-        const NavigationDestination(
-          icon: Icon(Icons.leaderboard_outlined),
-          selectedIcon: Icon(Icons.leaderboard),
-          label: 'Classement',
+        NavigationDestination(
+          icon: const Icon(Icons.leaderboard_outlined),
+          selectedIcon: const Icon(Icons.leaderboard),
+          label: l10n.leaderboardTab,
         ),
-        const NavigationDestination(
-          icon: Icon(Icons.psychology_alt_outlined),
-          selectedIcon: Icon(Icons.psychology_alt),
-          label: 'Mon QI',
+        NavigationDestination(
+          icon: const Icon(Icons.psychology_alt_outlined),
+          selectedIcon: const Icon(Icons.psychology_alt),
+          label: l10n.myIQTab,
         ),
         NavigationDestination(
           icon:
@@ -3973,7 +4374,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                     child: const Icon(Icons.people),
                   )
                   : const Icon(Icons.people),
-          label: 'Amis',
+          label: l10n.friendsTab,
         ),
       ];
     }
@@ -4029,6 +4430,38 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                   ),
                 ),
                 const SizedBox(width: 8),
+                GestureDetector(
+                  onTap: () {
+                    if (_currentUser != null) {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => UserProfilePage(userId: _currentUser!.uid),
+                        ),
+                      ).then((_) => _loadUserData());
+                    }
+                  },
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                    child: CircleAvatar(
+                      radius: 17,
+                      backgroundColor: (isDark ? AppColors.neonCyan : AppColors.primaryBlue).withOpacity(0.2),
+                      backgroundImage: (_savedPhotoUrl != null && _savedPhotoUrl!.isNotEmpty)
+                          ? CachedNetworkImageProvider(_savedPhotoUrl!)
+                          : null,
+                      child: (_savedPhotoUrl == null || _savedPhotoUrl!.isEmpty)
+                          ? Text(
+                              _savedName.isNotEmpty ? _savedName[0].toUpperCase() : '?',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                                color: isDark ? AppColors.neonCyan : AppColors.primaryBlue,
+                              ),
+                            )
+                          : null,
+                    ),
+                  ),
+                ),
                 IconButton(
                   icon: Icon(
                     Icons.settings_outlined,
@@ -4038,7 +4471,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                   onPressed:
                       () => Navigator.of(context).push(
                         MaterialPageRoute(builder: (_) => const SettingsPage()),
-                      ),
+                      ).then((_) => _loadUserData()),
                 ),
               ],
             ),
@@ -4532,7 +4965,7 @@ Assure-toi que le JSON est strictly valide. Ne renvoie AUCUN autre texte.
                 const SizedBox(height: 8),
                 Text(
                   _isVip
-                      ? '🤖 L\'IA choisit automatiquement Openverse pour les images simples et l\'IA FLUX pour les scènes complexes (Max 50 images IA/jour).'
+                      ? '🤖 L\'IA choisit automatiquement Openverse pour les images simples et l\'IA FLUX pour les scènes complexes (Max 20 images IA/jour).'
                       : '🔍 Recherche automatique d\'images gratuites via Openverse (Max 300 recherches/jour).',
                   style: const TextStyle(
                     fontSize: 12,
@@ -6080,22 +6513,13 @@ class _AddEditGameScreenState extends State<AddEditGameScreen> {
             i < _cPairImgUrls.length ? _cPairImgUrls[i].text.trim() : '';
 
         if (w.isNotEmpty || img.isNotEmpty) {
-          Map<String, dynamic> pair = {};
-          if (_displayMode == 'imagePair') {
-            pair = {'text_label': w, if (img.isNotEmpty) 'image_url': img};
-          } else if (_displayMode.contains('image')) {
-            pair = {
-              'definition': d,
-              'image_description': w,
-              if (img.isNotEmpty) 'image_url': img,
-            };
-          } else {
-            pair = {
-              'word': w,
-              'definition': d,
-              if (img.isNotEmpty) 'image_url': img,
-            };
-          }
+          final pair = <String, dynamic>{
+            'word': w,
+            'definition': d,
+            'text_label': w,
+            if (w.isNotEmpty) 'image_description': w,
+            if (img.isNotEmpty) 'image_url': img,
+          };
           pairs.add(pair);
         }
       }
@@ -6726,52 +7150,133 @@ class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
 
   Future<void> _showDeleteAccountDialog(BuildContext context) async {
+    final l10n = AppLocalizations.of(context)!;
     final confirm = await showDialog<bool>(
       context: context,
-      builder:
-          (ctx) => AlertDialog(
-            title: const Text(
-              'Supprimer mon compte ?',
-              style: TextStyle(color: Colors.red),
-            ),
-            content: const Text(
-              'Êtes-vous sûr de vouloir supprimer définitivement votre compte et toutes vos données ? '
-              'Cette action est irréversible.',
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(false),
-                child: const Text('Annuler'),
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.red),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                l10n.deleteAccountConfirmTitle,
+                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold, fontSize: 18),
               ),
-              ElevatedButton(
-                onPressed: () => Navigator.of(ctx).pop(true),
-                style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-                child: const Text(
-                  'Supprimer',
-                  style: TextStyle(color: Colors.white),
-                ),
-              ),
-            ],
+            ),
+          ],
+        ),
+        content: Text(
+          l10n.deleteAccountConfirmMessage,
+          style: const TextStyle(height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(l10n.cancel),
           ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: Text(l10n.confirm, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
     );
 
-    if (confirm == true) {
-      try {
-        final user = FirebaseAuth.instance.currentUser;
-        if (user != null) {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(user.uid)
-              .delete();
-          await user.delete();
-        }
-        Navigator.of(context).popUntil((route) => route.isFirst);
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Erreur: Veuillez vous déconnecter et vous reconnecter avant de supprimer votre compte.',
+    if (confirm != true || !context.mounted) return;
+
+    // Affiche un indicateur de chargement bloquant
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: Card(
+          child: Padding(
+            padding: EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: Colors.red),
+                SizedBox(height: 16),
+                Text('Suppression du compte...', style: TextStyle(fontWeight: FontWeight.bold)),
+              ],
             ),
+          ),
+        ),
+      ),
+    );
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      final uid = user?.uid;
+      bool functionWorked = false;
+
+      // 1. Tenter la Cloud Function
+      try {
+        final callable = FirebaseFunctions.instance.httpsCallable('deleteUserAccount');
+        await callable.call();
+        functionWorked = true;
+      } catch (funcErr) {
+        debugPrint('Cloud Function deleteUserAccount non joignable ou erreur: $funcErr');
+      }
+
+      // 2. Si la fonction n'a pas répondu, fallback de nettoyage direct côté client
+      if (!functionWorked && uid != null) {
+        try {
+          await FirebaseFirestore.instance.collection('users').doc(uid).delete();
+          await FirebaseFirestore.instance.collection('userStats').doc(uid).delete();
+          final userQuizzes = await FirebaseFirestore.instance.collection('quizzes').where('userId', isEqualTo: uid).get();
+          for (var doc in userQuizzes.docs) {
+            await doc.reference.delete();
+          }
+        } catch (dbErr) {
+          debugPrint('Erreur nettoyage direct Firestore : $dbErr');
+        }
+
+        if (user != null) {
+          try {
+            await user.delete();
+          } on FirebaseAuthException catch (e) {
+            if (e.code == 'requires-recent-login') {
+              if (context.mounted) {
+                Navigator.of(context).pop(); // Fermer le dialog de chargement
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text(
+                      'Pour des raisons de sécurité, veuillez vous reconnecter avant de supprimer votre compte.',
+                    ),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                await FirebaseAuth.instance.signOut();
+                return;
+              }
+            }
+            debugPrint('Erreur suppression Auth direct : $e');
+            await FirebaseAuth.instance.signOut();
+          } catch (authErr) {
+            debugPrint('Erreur suppression Auth direct : $authErr');
+            await FirebaseAuth.instance.signOut();
+          }
+        }
+      } else {
+        await FirebaseAuth.instance.signOut();
+      }
+
+      if (context.mounted) {
+        Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const AuthWrapper()),
+          (route) => false,
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        Navigator.of(context).pop(); // Fermer le dialog de chargement
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur lors de la suppression : $e'),
             backgroundColor: Colors.red,
           ),
         );
@@ -6781,6 +7286,7 @@ class SettingsPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final themeProvider = context.watch<ThemeProvider>();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final gradientColors =
@@ -6788,11 +7294,13 @@ class SettingsPage extends StatelessWidget {
             ? [const Color(0xFF2D1B69), const Color(0xFF1A1040)]
             : [const Color(0xFF5C35B8), const Color(0xFF3F6FD4)];
 
+    final currentUser = FirebaseAuth.instance.currentUser;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Paramètres',
-          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        title: Text(
+          l10n.settings,
+          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         leading: const BackButton(color: Colors.white),
         flexibleSpace: Container(
@@ -6804,11 +7312,102 @@ class SettingsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          // CARTE PROFIL EN HAUT DES PARAMÈTRES
+          if (currentUser != null)
+            StreamBuilder<DocumentSnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(currentUser.uid)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                final data = (snapshot.hasData && snapshot.data!.exists)
+                    ? snapshot.data!.data() as Map<String, dynamic>? ?? {}
+                    : <String, dynamic>{};
+
+                final username = data['username'] ?? data['name'] ?? currentUser.displayName ?? 'Utilisateur';
+                final photoUrl = data['photoUrl'] ?? currentUser.photoURL;
+
+                return Container(
+                  margin: const EdgeInsets.only(bottom: 24),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: isDark ? AppColors.midnightCard : Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isDark ? Colors.white12 : Colors.grey.shade200,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(isDark ? 0.2 : 0.04),
+                        blurRadius: 10,
+                        offset: const Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 30,
+                        backgroundColor: (isDark ? AppColors.neonCyan : AppColors.primaryBlue).withOpacity(0.15),
+                        backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                            ? CachedNetworkImageProvider(photoUrl)
+                            : null,
+                        child: (photoUrl == null || photoUrl.isEmpty)
+                            ? Text(
+                                username.isNotEmpty ? username[0].toUpperCase() : '?',
+                                style: TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: isDark ? AppColors.neonCyan : AppColors.primaryBlue,
+                                ),
+                              )
+                            : null,
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              username,
+                              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (currentUser.email != null && currentUser.email!.isNotEmpty)
+                              Text(
+                                currentUser.email!,
+                                style: TextStyle(fontSize: 13, color: Colors.grey.shade500),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                          ],
+                        ),
+                      ),
+                      IconButton.filledTonal(
+                        icon: const Icon(Icons.edit_rounded, size: 20),
+                        tooltip: 'Modifier mon pseudo ou ma photo',
+                        onPressed: () {
+                          showDialog<bool>(
+                            context: context,
+                            builder: (_) => EditProfileDialog(
+                              currentUsername: username,
+                              currentPhotoUrl: photoUrl,
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+
           // LANGUE
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
             child: Text(
-              'LANGUE',
+              l10n.language,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
@@ -6830,9 +7429,17 @@ class SettingsPage extends StatelessWidget {
                     ),
                   ),
                   items: const [
-                    DropdownMenuItem(value: 'fr', child: Text('Français')),
                     DropdownMenuItem(value: 'en', child: Text('English')),
+                    DropdownMenuItem(value: 'fr', child: Text('Français')),
                     DropdownMenuItem(value: 'es', child: Text('Español')),
+                    DropdownMenuItem(value: 'de', child: Text('Deutsch')),
+                    DropdownMenuItem(value: 'it', child: Text('Italiano')),
+                    DropdownMenuItem(value: 'pt', child: Text('Português')),
+                    DropdownMenuItem(value: 'nl', child: Text('Nederlands')),
+                    DropdownMenuItem(value: 'pl', child: Text('Polski')),
+                    DropdownMenuItem(value: 'uk', child: Text('Українська')),
+                    DropdownMenuItem(value: 'ru', child: Text('Русский')),
+                    DropdownMenuItem(value: 'sv', child: Text('Svenska')),
                   ],
                   onChanged: (val) {
                     if (val != null) localeProvider.setLocale(val);
@@ -6847,7 +7454,7 @@ class SettingsPage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
             child: Text(
-              'APPARENCE',
+              l10n.appearance,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
@@ -6860,24 +7467,64 @@ class SettingsPage extends StatelessWidget {
             child: Column(
               children: [
                 _ThemeOptionTile(
-                  label: 'Clair',
+                  label: l10n.themeLight,
                   icon: Icons.light_mode_rounded,
                   selected: themeProvider.themeMode == ThemeMode.light,
                   onTap: () => themeProvider.setThemeMode(ThemeMode.light),
                 ),
                 const Divider(height: 1, indent: 56),
                 _ThemeOptionTile(
-                  label: 'Sombre',
+                  label: l10n.themeDark,
                   icon: Icons.dark_mode_rounded,
                   selected: themeProvider.themeMode == ThemeMode.dark,
                   onTap: () => themeProvider.setThemeMode(ThemeMode.dark),
                 ),
                 const Divider(height: 1, indent: 56),
                 _ThemeOptionTile(
-                  label: 'Système',
+                  label: l10n.themeSystem,
                   icon: Icons.brightness_auto_rounded,
                   selected: themeProvider.themeMode == ThemeMode.system,
                   onTap: () => themeProvider.setThemeMode(ThemeMode.system),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          // LÉGAL
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8, top: 4),
+            child: Text(
+              "INFORMATIONS LÉGALES",
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1.2,
+                color: Theme.of(context).colorScheme.primary,
+              ),
+            ),
+          ),
+          Card(
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.privacy_tip_outlined, color: Colors.blue),
+                  title: const Text("Politique de Confidentialité"),
+                  trailing: const Icon(Icons.open_in_new, size: 18),
+                  onTap: () => launchUrl(
+                    Uri.parse("https://parrel.vercel.app/quizbot/privacy"),
+                    mode: LaunchMode.externalApplication,
+                  ),
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.description_outlined, color: Colors.blue),
+                  title: const Text("Conditions Générales d'Utilisation (CGU / EULA)"),
+                  trailing: const Icon(Icons.open_in_new, size: 18),
+                  onTap: () => launchUrl(
+                    Uri.parse("https://parrel.vercel.app/quizbot/terms"),
+                    mode: LaunchMode.externalApplication,
+                  ),
                 ),
               ],
             ),
@@ -6888,7 +7535,7 @@ class SettingsPage extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 8),
             child: Text(
-              'COMPTE',
+              l10n.account,
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
@@ -6900,9 +7547,26 @@ class SettingsPage extends StatelessWidget {
           Card(
             child: Column(
               children: [
+                if (currentUser != null) ...[
+                  ListTile(
+                    leading: Icon(Icons.badge_rounded, color: Theme.of(context).colorScheme.primary),
+                    title: const Text('Modifier mon profil (Pseudo & Photo)'),
+                    trailing: const Icon(Icons.chevron_right_rounded),
+                    onTap: () {
+                      showDialog<bool>(
+                        context: context,
+                        builder: (_) => EditProfileDialog(
+                          currentUsername: currentUser.displayName ?? '',
+                          currentPhotoUrl: currentUser.photoURL,
+                        ),
+                      );
+                    },
+                  ),
+                  const Divider(height: 1),
+                ],
                 ListTile(
                   leading: const Icon(Icons.logout, color: Colors.orange),
-                  title: const Text('Se déconnecter'),
+                  title: Text(l10n.logout),
                   onTap: () async {
                     await FirebaseAuth.instance.signOut();
                     Navigator.of(context).popUntil((route) => route.isFirst);
@@ -6911,9 +7575,9 @@ class SettingsPage extends StatelessWidget {
                 const Divider(height: 1),
                 ListTile(
                   leading: const Icon(Icons.delete_forever, color: Colors.red),
-                  title: const Text(
-                    'Supprimer mon compte',
-                    style: TextStyle(color: Colors.red),
+                  title: Text(
+                    l10n.deleteAccount,
+                    style: const TextStyle(color: Colors.red),
                   ),
                   onTap: () => _showDeleteAccountDialog(context),
                 ),
@@ -6963,34 +7627,35 @@ class QuizLibraryContainerPage extends StatelessWidget {
   final bool isGuest;
   final Function(List<dynamic>, String, String?) onPlay;
   final Function(Map<String, dynamic>) onPlayOnline;
-  final Function(Map<String, dynamic>) onCompleteAI; // NOUVEAU
+  final Function(Map<String, dynamic>) onCompleteAI;
 
   const QuizLibraryContainerPage({
     super.key,
     required this.isGuest,
     required this.onPlay,
     required this.onPlayOnline,
-    required this.onCompleteAI, // NOUVEAU
+    required this.onCompleteAI,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    // Harmonisation : utilise exactement la couleur principale des boutons de l'app
+    final activeTabColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
 
     return DefaultTabController(
       length: 2,
       child: Column(
         children: [
           Container(
-            color: isDark ? Colors.black12 : Colors.white54,
+            color: isDark ? AppColors.midnightSurface : Colors.white,
             child: TabBar(
-              indicatorColor:
-                  isDark ? AppColors.neonCyan : AppColors.primaryBlue,
-              labelColor: isDark ? AppColors.neonCyan : AppColors.primaryBlue,
-              unselectedLabelColor:
-                  isDark ? Colors.white60 : AppColors.textSecondary,
-              dividerColor: Colors.transparent,
+              indicatorColor: activeTabColor,
+              labelColor: activeTabColor,
+              unselectedLabelColor: isDark ? Colors.white60 : AppColors.textSecondary,
+              dividerColor: isDark ? Colors.white12 : Colors.grey.shade200,
               indicatorWeight: 3,
+              labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               tabs: const [
                 Tab(
                   icon: Icon(Icons.folder_shared_rounded),
@@ -7010,7 +7675,7 @@ class QuizLibraryContainerPage extends StatelessWidget {
                   onPlay: onPlay,
                   isGuest: isGuest,
                   onCompleteAI: onCompleteAI,
-                ), // MODIFIÉ
+                ),
                 SearchQuizzesPage(onPlay: onPlay, onPlayOnline: onPlayOnline),
               ],
             ),
@@ -7333,6 +7998,8 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+    final onPrimaryColor = isDark ? AppColors.midnight : Colors.white;
 
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
@@ -7343,8 +8010,8 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
           'Créer un jeu',
           style: TextStyle(fontWeight: FontWeight.bold),
         ),
-        backgroundColor: AppColors.primaryBlue,
-        foregroundColor: Colors.white,
+        backgroundColor: primaryColor,
+        foregroundColor: onPrimaryColor,
         elevation: 4,
       ),
       body:
@@ -7422,12 +8089,12 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                       leading: Container(
                         padding: const EdgeInsets.all(10),
                         decoration: BoxDecoration(
-                          color: AppColors.primaryBlue.withOpacity(0.1),
+                          color: primaryColor.withOpacity(0.12),
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: const Icon(
+                        child: Icon(
                           Icons.quiz_rounded,
-                          color: AppColors.primaryBlue,
+                          color: primaryColor,
                         ),
                       ),
                       title: Text(
@@ -7522,8 +8189,8 @@ class _AllQuizzesPageState extends State<AllQuizzesPage> {
                                     ),
                                   ),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primaryBlue,
-                                    foregroundColor: Colors.white,
+                                    backgroundColor: primaryColor,
+                                    foregroundColor: onPrimaryColor,
                                     elevation: 0,
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(14),
@@ -7671,6 +8338,10 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+    final onPrimaryColor = isDark ? AppColors.midnight : Colors.white;
+
     return Scaffold(
       backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Column(
@@ -7703,9 +8374,9 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                                 setState(() => _selectedTheme = theme);
                                 _filterQuizzes();
                               },
-                              selectedColor: AppColors.primaryBlue,
+                              selectedColor: primaryColor,
                               labelStyle: TextStyle(
-                                color: isSelected ? Colors.white : null,
+                                color: isSelected ? onPrimaryColor : null,
                                 fontWeight:
                                     isSelected
                                         ? FontWeight.bold
@@ -7752,9 +8423,9 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                             return Card(
                               margin: const EdgeInsets.symmetric(vertical: 8.0),
                               child: ExpansionTile(
-                                leading: const Icon(
+                                leading: Icon(
                                   Icons.public,
-                                  color: Colors.blue,
+                                  color: primaryColor,
                                 ),
                                 title: Text('Quiz de $userName'),
                                 subtitle: Text(textPreview),
@@ -7762,9 +8433,9 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
                                     IconButton(
-                                      icon: const Icon(
+                                      icon: Icon(
                                         Icons.person,
-                                        color: Colors.indigo,
+                                        color: primaryColor,
                                       ),
                                       tooltip: 'Voir le profil',
                                       onPressed: () {
@@ -7781,23 +8452,130 @@ class _SearchQuizzesPageState extends State<SearchQuizzesPage> {
                                         }
                                       },
                                     ),
-                                    IconButton(
-                                      icon: const Icon(
-                                        Icons.report_problem_outlined,
-                                        color: Colors.redAccent,
-                                      ),
-                                      tooltip: 'Signaler',
-                                      onPressed: () {
-                                        ScaffoldMessenger.of(
-                                          context,
-                                        ).showSnackBar(
-                                          const SnackBar(
-                                            content: Text(
-                                              'Le quiz a été signalé aux modérateurs.',
+                                    PopupMenuButton<String>(
+                                      icon: const Icon(Icons.more_vert_rounded),
+                                      tooltip: 'Options',
+                                      onSelected: (val) async {
+                                        if (val == 'report') {
+                                          final reason = await showDialog<String>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                              title: const Row(
+                                                children: [
+                                                  Icon(Icons.flag_rounded, color: Colors.redAccent),
+                                                  SizedBox(width: 8),
+                                                  Text('Signaler ce quiz', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                                                ],
+                                              ),
+                                              content: Column(
+                                                mainAxisSize: MainAxisSize.min,
+                                                children: [
+                                                  ListTile(
+                                                    title: const Text('Contenu inapproprié'),
+                                                    onTap: () => Navigator.pop(ctx, 'Contenu inapproprié'),
+                                                  ),
+                                                  ListTile(
+                                                    title: const Text('Erreurs ou désinformation'),
+                                                    onTap: () => Navigator.pop(ctx, 'Erreurs ou désinformation'),
+                                                  ),
+                                                  ListTile(
+                                                    title: const Text('Spam ou publicité'),
+                                                    onTap: () => Navigator.pop(ctx, 'Spam ou publicité'),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                          );
+                                          if (reason != null && context.mounted) {
+                                            try {
+                                              await FirebaseFunctions.instance.httpsCallable('reportContent').call({
+                                                'targetId': quiz['quizId'] ?? quiz['id'],
+                                                'targetType': 'quiz',
+                                                'reason': reason,
+                                              });
+                                            } catch (_) {
+                                              await FirebaseFirestore.instance.collection('reports').add({
+                                                'reporterId': FirebaseAuth.instance.currentUser?.uid,
+                                                'targetId': quiz['quizId'] ?? quiz['id'],
+                                                'targetType': 'quiz',
+                                                'reason': reason,
+                                                'timestamp': FieldValue.serverTimestamp(),
+                                              });
+                                            }
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('Le quiz a été signalé aux modérateurs.')),
+                                              );
+                                            }
+                                          }
+                                        } else if (val == 'block') {
+                                          final authorUid = quiz['userId'];
+                                          if (authorUid == null) return;
+                                          final confirm = await showDialog<bool>(
+                                            context: context,
+                                            builder: (ctx) => AlertDialog(
+                                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                                              title: const Row(
+                                                children: [
+                                                  Icon(Icons.block_rounded, color: Colors.orange),
+                                                  SizedBox(width: 8),
+                                                  Text('Bloquer l\'auteur ?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                                                ],
+                                              ),
+                                              content: Text('Vous ne verrez plus les parties ni les créations de $userName.'),
+                                              actions: [
+                                                TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+                                                ElevatedButton(
+                                                  onPressed: () => Navigator.pop(ctx, true),
+                                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                                                  child: const Text('Bloquer', style: TextStyle(color: Colors.white)),
+                                                ),
+                                              ],
+                                            ),
+                                          );
+                                          if (confirm == true && context.mounted) {
+                                            try {
+                                              await FirebaseFunctions.instance.httpsCallable('blockUser').call({'blockedUid': authorUid});
+                                            } catch (_) {
+                                              final curUid = FirebaseAuth.instance.currentUser?.uid;
+                                              if (curUid != null) {
+                                                await FirebaseFirestore.instance.collection('users').doc(curUid).set({
+                                                  'blockedUsers': FieldValue.arrayUnion([authorUid])
+                                                }, SetOptions(merge: true));
+                                              }
+                                            }
+                                            if (context.mounted) {
+                                              ScaffoldMessenger.of(context).showSnackBar(
+                                                const SnackBar(content: Text('Auteur bloqué.'), backgroundColor: Colors.orange),
+                                              );
+                                            }
+                                          }
+                                        }
+                                      },
+                                      itemBuilder: (ctx) => [
+                                        const PopupMenuItem(
+                                          value: 'report',
+                                          child: Row(
+                                            children: [
+                                              Icon(Icons.flag_rounded, color: Colors.redAccent, size: 20),
+                                              SizedBox(width: 8),
+                                              Text('Signaler le quiz'),
+                                            ],
+                                          ),
+                                        ),
+                                        if (quiz['userId'] != null && quiz['userId'] != FirebaseAuth.instance.currentUser?.uid)
+                                          const PopupMenuItem(
+                                            value: 'block',
+                                            child: Row(
+                                              children: [
+                                                Icon(Icons.block_rounded, color: Colors.orange, size: 20),
+                                                SizedBox(width: 8),
+                                                Text('Bloquer l\'auteur'),
+                                              ],
                                             ),
                                           ),
-                                        );
-                                      },
+                                      ],
                                     ),
                                   ],
                                 ),
@@ -7884,18 +8662,8 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   bool _isLoading = true;
   String _selectedCountry = 'Monde';
   final List<String> _countries = [
-    'Monde',
-    'France',
-    'Belgique',
-    'Suisse',
-    'Canada',
-    'Maroc',
-    'Algérie',
+    'Monde', 'France', 'Belgique', 'Suisse', 'Canada', 'Maroc', 'Algérie'
   ];
-
-  // Données du joueur actuel
-  int? _myRank;
-  Map<String, dynamic>? _myScoreData;
 
   @override
   void initState() {
@@ -7906,67 +8674,26 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
   Future<void> _loadLeaderboard() async {
     setState(() => _isLoading = true);
     try {
-      Query query = FirebaseFirestore.instance
-          .collection('users')
-          .orderBy('score', descending: true);
+      Query query = FirebaseFirestore.instance.collection('users');
 
       if (_selectedCountry != 'Monde') {
         query = query.where('country', isEqualTo: _selectedCountry);
       }
+      query = query.orderBy('score', descending: true);
 
-      // Limite aux 100 premiers
       final snapshot = await query.limit(100).get();
-
       final currentUid = FirebaseAuth.instance.currentUser?.uid;
-      bool iAmInTop100 = false;
 
       final List<Map<String, dynamic>> players = [];
-      for (int i = 0; i < snapshot.docs.length; i++) {
-        final data = snapshot.docs[i].data() as Map<String, dynamic>;
-        final isMe = snapshot.docs[i].id == currentUid;
-        if (isMe) iAmInTop100 = true;
-
+      for (var doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
         players.add({
-          'uid': snapshot.docs[i].id,
-          'username': data['username'] ?? 'Inconnu',
+          'uid': doc.id,
+          'username': data['username'] ?? data['name'] ?? 'Anonyme',
           'score': data['score'] ?? 0,
-          'isMe': isMe,
+          'photoUrl': data['photoUrl'],
+          'isMe': doc.id == currentUid,
         });
-      }
-
-      // Si l'utilisateur n'est pas dans le top 100, on récupère son rang exact
-      if (!iAmInTop100 && currentUid != null) {
-        final myDoc =
-            await FirebaseFirestore.instance
-                .collection('users')
-                .doc(currentUid)
-                .get();
-        if (myDoc.exists) {
-          final myData = myDoc.data()!;
-          final myScore = myData['score'] ?? 0;
-
-          Query rankQuery = FirebaseFirestore.instance
-              .collection('users')
-              .where('score', isGreaterThan: myScore);
-          if (_selectedCountry != 'Monde') {
-            rankQuery = rankQuery.where('country', isEqualTo: _selectedCountry);
-          }
-
-          final countSnapshot = await rankQuery.count().get();
-          _myRank =
-              countSnapshot.count! +
-              1; // Rang = nombre de personnes avec un meilleur score + 1
-
-          _myScoreData = {
-            'uid': currentUid,
-            'username': myData['username'] ?? 'Moi',
-            'score': myScore,
-            'isMe': true,
-          };
-        }
-      } else {
-        _myRank = null;
-        _myScoreData = null;
       }
 
       if (mounted) {
@@ -7976,156 +8703,456 @@ class _LeaderboardPageState extends State<LeaderboardPage> {
         });
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Erreur : $e')));
-        setState(() => _isLoading = false);
-      }
+      debugPrint("Erreur lors du chargement du classement Firestore: $e");
+      if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  Widget _buildTop3Podium(bool isDark) {
+    if (_topPlayers.isEmpty) return const SizedBox.shrink();
+
+    final first = _topPlayers[0];
+    final second = _topPlayers.length > 1 ? _topPlayers[1] : null;
+    final third = _topPlayers.length > 2 ? _topPlayers[2] : null;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 12),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.midnightCard.withOpacity(0.6) : Colors.white.withOpacity(0.8),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDark ? Colors.white12 : Colors.grey.shade200,
+        ),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          // 2ème place - Argent (si au moins 2 joueurs)
+          if (second != null) ...[
+            _buildPodiumStep(
+              second,
+              rank: 2,
+              height: 110,
+              color: const Color(0xFFC0C0C0),
+              gradientColors: [const Color(0xFFE2E8F0), const Color(0xFF94A3B8)],
+              crown: '🥈',
+            ),
+            const SizedBox(width: 8),
+          ],
+          // 1ère place - Or
+          _buildPodiumStep(
+            first,
+            rank: 1,
+            height: 145,
+            color: const Color(0xFFFFD700),
+            gradientColors: [const Color(0xFFFFE066), const Color(0xFFF59E0B)],
+            crown: '👑',
+          ),
+          // 3ème place - Bronze (si au moins 3 joueurs)
+          if (third != null) ...[
+            const SizedBox(width: 8),
+            _buildPodiumStep(
+              third,
+              rank: 3,
+              height: 95,
+              color: const Color(0xFFCD7F32),
+              gradientColors: [const Color(0xFFFDBA74), const Color(0xFFB45309)],
+              crown: '🥉',
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPodiumStep(
+    Map<String, dynamic> player, {
+    required int rank,
+    required double height,
+    required Color color,
+    required List<Color> gradientColors,
+    required String crown,
+  }) {
+    final photoUrl = player['photoUrl'] as String?;
+    final hasPhoto = photoUrl != null && photoUrl.isNotEmpty;
+    final username = (player['username'] as String? ?? 'Anonyme');
+    final initial = username.isNotEmpty ? username[0].toUpperCase() : '?';
+
+    return Expanded(
+      child: InkWell(
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => UserProfilePage(userId: player['uid']),
+          ),
+        ),
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(crown, style: const TextStyle(fontSize: 26)),
+            const SizedBox(height: 4),
+            Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(color: color, width: rank == 1 ? 2.5 : 2),
+                boxShadow: [
+                  BoxShadow(
+                    color: color.withOpacity(0.35),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: CircleAvatar(
+                radius: rank == 1 ? 28 : 22,
+                backgroundColor: color.withOpacity(0.2),
+                backgroundImage: hasPhoto ? CachedNetworkImageProvider(photoUrl) : null,
+                child: !hasPhoto
+                    ? Text(
+                        initial,
+                        style: TextStyle(fontWeight: FontWeight.bold, color: color, fontSize: rank == 1 ? 20 : 16),
+                      )
+                    : null,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              username,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: rank == 1 ? 14 : 12,
+              ),
+            ),
+            Container(
+              margin: const EdgeInsets.only(top: 2, bottom: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: color.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.star_rounded, size: 12, color: Colors.amber),
+                  const SizedBox(width: 2),
+                  Text(
+                    '${player['score']}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: color,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              height: height,
+              width: double.infinity,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    gradientColors[0].withOpacity(0.5),
+                    gradientColors[1].withOpacity(0.15),
+                  ],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+                borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                border: Border.all(color: color.withOpacity(0.6), width: 1.5),
+              ),
+              child: Center(
+                child: Text(
+                  '#$rank',
+                  style: TextStyle(
+                    fontSize: rank == 1 ? 24 : 20,
+                    fontWeight: FontWeight.bold,
+                    color: color,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+    final myIndex = _topPlayers.indexWhere((p) => p['uid'] == currentUid);
+    final myPlayer = myIndex != -1 ? _topPlayers[myIndex] : null;
+
     return Scaffold(
       appBar: AppBar(
         automaticallyImplyLeading: false,
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: DropdownButton<String>(
-          value: _selectedCountry,
-          dropdownColor: Theme.of(context).colorScheme.surface,
-          items:
-              _countries
-                  .map(
-                    (c) => DropdownMenuItem(
-                      value: c,
-                      child: Text(
-                        c,
-                        style: const TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                    ),
-                  )
-                  .toList(),
-          onChanged: (val) {
-            if (val != null) {
-              setState(() => _selectedCountry = val);
-              _loadLeaderboard();
-            }
-          },
+        title: const Row(
+          children: [
+            Icon(Icons.emoji_events_rounded, color: Colors.amber),
+            SizedBox(width: 8),
+            Text(
+              'Classement',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ],
         ),
       ),
-      body:
-          _isLoading
-              ? const Center(child: CircularProgressIndicator())
-              : Column(
-                children: [
-                  Expanded(
-                    child:
-                        _topPlayers.isEmpty
-                            ? const Center(
-                              child: Text('Aucun joueur trouvé pour ce pays.'),
-                            )
-                            : ListView.builder(
-                              padding: const EdgeInsets.all(8.0),
-                              itemCount: _topPlayers.length,
-                              itemBuilder: (context, index) {
-                                final player = _topPlayers[index];
-                                final isMe = player['isMe'] == true;
-                                return Card(
-                                  color:
-                                      isMe
-                                          ? AppColors.primaryBlue.withOpacity(
-                                            0.1,
-                                          )
-                                          : null,
-                                  margin: const EdgeInsets.symmetric(
-                                    vertical: 4.0,
-                                  ),
-                                  child: ListTile(
-                                    leading: Text(
-                                      '#${index + 1}',
-                                      style: const TextStyle(
-                                        fontSize: 18,
-                                        fontWeight: FontWeight.bold,
-                                      ),
-                                    ),
-                                    title: Text(
-                                      player['username'],
-                                      style: TextStyle(
-                                        fontSize: 18,
-                                        fontWeight:
-                                            isMe
-                                                ? FontWeight.bold
-                                                : FontWeight.normal,
-                                      ),
-                                    ),
-                                    trailing: Text(
-                                      '${player['score']} pts',
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        color: Colors.amber,
-                                      ),
-                                    ),
-                                    onTap:
-                                        () => Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder:
-                                                (_) => UserProfilePage(
-                                                  userId: player['uid'],
-                                                ),
-                                          ),
-                                        ),
-                                  ),
-                                );
-                              },
-                            ),
+      bottomNavigationBar: (myPlayer != null && myIndex >= 3)
+          ? Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: isDark ? AppColors.midnightCard : Colors.white,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.1),
+                    blurRadius: 10,
+                    offset: const Offset(0, -3),
                   ),
-                  // Ligne épinglée si le joueur n'est pas dans le top 100
-                  if (_myScoreData != null && _myRank != null)
+                ],
+                border: Border(
+                  top: BorderSide(color: primaryColor, width: 2),
+                ),
+              ),
+              child: SafeArea(
+                child: Row(
+                  children: [
                     Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Theme.of(context).colorScheme.surface,
-                        boxShadow: const [
-                          BoxShadow(
-                            color: Colors.black12,
-                            blurRadius: 10,
-                            offset: Offset(0, -5),
-                          ),
-                        ],
+                        color: primaryColor.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(10),
                       ),
-                      padding: const EdgeInsets.all(8.0),
-                      child: Card(
-                        color: AppColors.primaryBlue.withOpacity(0.2),
-                        child: ListTile(
-                          leading: Text(
-                            '#$_myRank',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.primaryBlue,
-                            ),
-                          ),
-                          title: Text(
-                            '${_myScoreData!['username']} (Vous)',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          trailing: Text(
-                            '${_myScoreData!['score']} pts',
-                            style: const TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.amber,
-                            ),
-                          ),
+                      child: Text(
+                        '#${myIndex + 1}',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: primaryColor,
+                          fontSize: 16,
                         ),
                       ),
                     ),
-                ],
+                    const SizedBox(width: 12),
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: primaryColor.withOpacity(0.2),
+                      backgroundImage: (myPlayer['photoUrl'] != null && myPlayer['photoUrl'].toString().isNotEmpty)
+                          ? CachedNetworkImageProvider(myPlayer['photoUrl'])
+                          : null,
+                      child: (myPlayer['photoUrl'] == null || myPlayer['photoUrl'].toString().isEmpty)
+                          ? Text(
+                              myPlayer['username'].toString().isNotEmpty
+                                  ? myPlayer['username'][0].toUpperCase()
+                                  : '?',
+                              style: TextStyle(fontWeight: FontWeight.bold, color: primaryColor),
+                            )
+                          : null,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${myPlayer['username']} (Vous)',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const Text(
+                            'Votre position actuelle',
+                            style: TextStyle(fontSize: 11, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withOpacity(0.15),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.star_rounded, color: Colors.amber, size: 16),
+                          const SizedBox(width: 4),
+                          Text(
+                            '${myPlayer['score']} pts',
+                            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.amber, fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
+            )
+          : null,
+      body: Column(
+        children: [
+          // FILTRES PAR PAYS (CHIPS MODERNES)
+          Container(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: _countries.map((c) {
+                  final isSelected = _selectedCountry == c;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(c),
+                      selected: isSelected,
+                      selectedColor: primaryColor,
+                      labelStyle: TextStyle(
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                        color: isSelected ? (isDark ? AppColors.midnight : Colors.white) : null,
+                      ),
+                      onSelected: (val) {
+                        if (val && _selectedCountry != c) {
+                          setState(() => _selectedCountry = c);
+                          _loadLeaderboard();
+                        }
+                      },
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ),
+
+          Expanded(
+            child: _isLoading
+                ? const Center(child: CircularProgressIndicator())
+                : RefreshIndicator(
+                    onRefresh: _loadLeaderboard,
+                    child: CustomScrollView(
+                      slivers: [
+                        SliverToBoxAdapter(child: _buildTop3Podium(isDark)),
+                        if (_topPlayers.isEmpty)
+                          const SliverFillRemaining(
+                            hasScrollBody: false,
+                            child: Center(child: Text('Aucun joueur trouvé pour cette sélection.')),
+                          )
+                        else
+                          SliverPadding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+                            sliver: SliverList(
+                              delegate: SliverChildBuilderDelegate(
+                                (context, index) {
+                                  final player = _topPlayers[index];
+                                  final isMe = player['isMe'] == true;
+                                  final photoUrl = player['photoUrl'] as String?;
+                                  final hasPhoto = photoUrl != null && photoUrl.isNotEmpty;
+                                  final username = (player['username'] as String? ?? 'Anonyme');
+                                  final initial = username.isNotEmpty ? username[0].toUpperCase() : '?';
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    decoration: BoxDecoration(
+                                      color: isMe
+                                          ? primaryColor.withOpacity(0.12)
+                                          : (isDark ? AppColors.midnightCard : Colors.white),
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(
+                                        color: isMe
+                                            ? primaryColor
+                                            : (isDark ? Colors.white10 : Colors.grey.shade200),
+                                        width: isMe ? 2 : 1,
+                                      ),
+                                    ),
+                                    child: ListTile(
+                                      leading: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          SizedBox(
+                                            width: 32,
+                                            child: Text(
+                                              '#${index + 1}',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14,
+                                                color: isMe
+                                                    ? primaryColor
+                                                    : (index < 3 ? Colors.amber : Colors.grey),
+                                              ),
+                                            ),
+                                          ),
+                                          CircleAvatar(
+                                            radius: 19,
+                                            backgroundColor: primaryColor.withOpacity(0.15),
+                                            backgroundImage: hasPhoto ? CachedNetworkImageProvider(photoUrl) : null,
+                                            child: !hasPhoto
+                                                ? Text(
+                                                    initial,
+                                                    style: TextStyle(
+                                                      fontWeight: FontWeight.bold,
+                                                      color: primaryColor,
+                                                    ),
+                                                  )
+                                                : null,
+                                          ),
+                                        ],
+                                      ),
+                                      title: Text(
+                                        username + (isMe ? ' (Vous)' : ''),
+                                        style: TextStyle(
+                                          fontWeight: isMe ? FontWeight.bold : FontWeight.w600,
+                                          color: isMe ? primaryColor : null,
+                                        ),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      trailing: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                        decoration: BoxDecoration(
+                                          color: Colors.amber.withOpacity(0.12),
+                                          borderRadius: BorderRadius.circular(12),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            const Icon(Icons.star_rounded, size: 14, color: Colors.amber),
+                                            const SizedBox(width: 3),
+                                            Text(
+                                              '${player['score']}',
+                                              style: const TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                color: Colors.amber,
+                                                fontSize: 13,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      onTap: () => Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) => UserProfilePage(userId: player['uid']),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                                childCount: _topPlayers.length,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -8641,6 +9668,7 @@ class FriendsPage extends StatefulWidget {
 
 class _FriendsPageState extends State<FriendsPage> {
   final TextEditingController _searchController = TextEditingController();
+  Timer? _searchDebounce;
   List<Map<String, dynamic>> _searchResults = [];
   List<Map<String, dynamic>> _friends = [];
   List<Map<String, dynamic>> _friendRequests = [];
@@ -8654,8 +9682,16 @@ class _FriendsPageState extends State<FriendsPage> {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged(String query) {
+    _searchDebounce?.cancel();
+    _searchDebounce = Timer(const Duration(milliseconds: 500), () {
+      _searchUsers(query.trim());
+    });
   }
 
   Future<void> _loadFriendsAndRequests() async {
@@ -8936,10 +9972,10 @@ class _FriendsPageState extends State<FriendsPage> {
                                   icon: const Icon(Icons.search),
                                   onPressed:
                                       () =>
-                                          _searchUsers(_searchController.text),
+                                          _searchUsers(_searchController.text.trim()),
                                 ),
                               ),
-                              onChanged: _searchUsers,
+                              onChanged: _onSearchChanged,
                             ),
                             const SizedBox(height: 16),
                             ..._searchResults.map((user) {
@@ -9093,9 +10129,379 @@ class _FriendsPageState extends State<FriendsPage> {
   }
 }
 
-class UserProfilePage extends StatelessWidget {
+class EditProfileDialog extends StatefulWidget {
+  final String currentUsername;
+  final String? currentPhotoUrl;
+
+  const EditProfileDialog({
+    super.key,
+    required this.currentUsername,
+    this.currentPhotoUrl,
+  });
+
+  @override
+  State<EditProfileDialog> createState() => _EditProfileDialogState();
+}
+
+class _EditProfileDialogState extends State<EditProfileDialog> {
+  late TextEditingController _nameController;
+  String? _photoUrl;
+  bool _isSaving = false;
+  bool _isUploadingPhoto = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(text: widget.currentUsername);
+    _photoUrl = widget.currentPhotoUrl;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickAndUploadAvatar() async {
+    final picker = ImagePicker();
+    final pickedFile = await picker.pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 512,
+      maxHeight: 512,
+      imageQuality: 85,
+    );
+    if (pickedFile == null) return;
+
+    setState(() => _isUploadingPhoto = true);
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) throw Exception("Utilisateur non connecté.");
+
+      final fileBytes = await pickedFile.readAsBytes();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final ref = FirebaseStorage.instance
+          .ref()
+          .child('avatars')
+          .child('${user.uid}_$timestamp.jpg');
+
+      final uploadTask = await ref.putData(
+        fileBytes,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      final downloadUrl = await uploadTask.ref.getDownloadURL();
+
+      if (mounted) {
+        setState(() {
+          _photoUrl = downloadUrl;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Photo chargée ! Cliquez sur Enregistrer pour valider.'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur lors du téléchargement : $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isUploadingPhoto = false);
+    }
+  }
+
+  Future<void> _saveProfile() async {
+    final newName = _nameController.text.trim();
+    if (newName.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Veuillez entrer un pseudo valide.')),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user != null) {
+        await user.updateDisplayName(newName);
+        if (_photoUrl != null && _photoUrl!.isNotEmpty) {
+          await user.updatePhotoURL(_photoUrl);
+        }
+        await user.reload();
+
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'username': newName,
+          'name': newName,
+          if (_photoUrl != null) 'photoUrl': _photoUrl,
+        }, SetOptions(merge: true));
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Profil mis à jour avec succès !'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erreur de mise à jour : $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isSaving = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final primaryColor = isDark ? AppColors.neonCyan : AppColors.primaryBlue;
+
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      backgroundColor: isDark ? AppColors.midnightCard : Colors.white,
+      title: const Text('Modifier le profil', style: TextStyle(fontWeight: FontWeight.bold)),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Stack(
+              alignment: Alignment.bottomRight,
+              children: [
+                CircleAvatar(
+                  radius: 50,
+                  backgroundColor: primaryColor.withOpacity(0.15),
+                  backgroundImage: (_photoUrl != null && _photoUrl!.isNotEmpty)
+                      ? CachedNetworkImageProvider(_photoUrl!)
+                      : null,
+                  child: _isUploadingPhoto
+                      ? CircularProgressIndicator(strokeWidth: 3, color: primaryColor)
+                      : (_photoUrl == null || _photoUrl!.isEmpty)
+                          ? Text(
+                              _nameController.text.isNotEmpty
+                                  ? _nameController.text[0].toUpperCase()
+                                  : '?',
+                              style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: primaryColor),
+                            )
+                          : null,
+                ),
+                GestureDetector(
+                  onTap: (_isSaving || _isUploadingPhoto) ? null : _pickAndUploadAvatar,
+                  child: Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: primaryColor,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: primaryColor.withOpacity(0.4),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Icon(
+                      _isUploadingPhoto ? Icons.hourglass_top_rounded : Icons.camera_alt_rounded,
+                      color: isDark ? AppColors.midnight : Colors.white,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Appuyez sur la caméra pour changer votre photo',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 18),
+            TextField(
+              controller: _nameController,
+              decoration: InputDecoration(
+                labelText: 'Pseudo',
+                prefixIcon: const Icon(Icons.person_rounded),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+              ),
+              maxLength: 25,
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: (_isSaving || _isUploadingPhoto) ? null : () => Navigator.pop(context, false),
+          child: const Text('Annuler'),
+        ),
+        ElevatedButton(
+          onPressed: (_isSaving || _isUploadingPhoto) ? null : _saveProfile,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: primaryColor,
+            foregroundColor: isDark ? AppColors.midnight : Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+          child: _isSaving
+              ? SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: isDark ? AppColors.midnight : Colors.white))
+              : const Text('Enregistrer', style: TextStyle(fontWeight: FontWeight.bold)),
+        ),
+      ],
+    );
+  }
+}
+
+class UserProfilePage extends StatefulWidget {
   final String userId;
   const UserProfilePage({super.key, required this.userId});
+
+  @override
+  State<UserProfilePage> createState() => _UserProfilePageState();
+}
+
+class _UserProfilePageState extends State<UserProfilePage> {
+  int _refreshKey = 0;
+
+  Future<void> _showReportDialog(BuildContext context, String targetName) async {
+    String selectedReason = 'Comportement inapproprié';
+    final reasons = [
+      'Comportement inapproprié',
+      'Pseudo offensant ou vulgaire',
+      'Triche ou anti-jeu',
+      'Spam ou arnaque',
+      'Autre',
+    ];
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              const Icon(Icons.flag_rounded, color: Colors.redAccent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Signaler $targetName',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Indiquez le motif du signalement :'),
+              const SizedBox(height: 12),
+              ...reasons.map((r) => RadioListTile<String>(
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(r, style: const TextStyle(fontSize: 14)),
+                    value: r,
+                    groupValue: selectedReason,
+                    onChanged: (val) {
+                      if (val != null) setDialogState(() => selectedReason = val);
+                    },
+                  )),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+              child: const Text('Envoyer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed == true && context.mounted) {
+      try {
+        await FirebaseFunctions.instance.httpsCallable('reportContent').call({
+          'targetId': widget.userId,
+          'targetType': 'user',
+          'reason': selectedReason,
+        });
+      } catch (_) {
+        await FirebaseFirestore.instance.collection('reports').add({
+          'reporterId': FirebaseAuth.instance.currentUser?.uid,
+          'targetId': widget.userId,
+          'targetType': 'user',
+          'reason': selectedReason,
+          'timestamp': FieldValue.serverTimestamp(),
+        });
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Utilisateur signalé aux modérateurs. Merci pour votre signalement !'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _handleBlockUser(BuildContext context, String targetName) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(
+          children: [
+            Icon(Icons.block_rounded, color: Colors.orange),
+            SizedBox(width: 8),
+            Text('Bloquer cet utilisateur ?', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+          ],
+        ),
+        content: Text('Vous ne verrez plus les parties ni les créations de $targetName.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annuler')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Bloquer', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true && context.mounted) {
+      try {
+        await FirebaseFunctions.instance.httpsCallable('blockUser').call({'blockedUid': widget.userId});
+      } catch (_) {
+        final currentUid = FirebaseAuth.instance.currentUser?.uid;
+        if (currentUid != null) {
+          await FirebaseFirestore.instance.collection('users').doc(currentUid).set({
+            'blockedUsers': FieldValue.arrayUnion([widget.userId])
+          }, SetOptions(merge: true));
+        }
+      }
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Utilisateur bloqué.'), backgroundColor: Colors.orange),
+        );
+        Navigator.pop(context);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -9104,229 +10510,335 @@ class UserProfilePage extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
-      appBar: AppBar(
-        title: const Text('Profil'),
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        foregroundColor: isDark ? Colors.white : AppColors.deepBlue,
-      ),
       body: FutureBuilder<DocumentSnapshot>(
-        future:
-            FirebaseFirestore.instance.collection('users').doc(userId).get(),
+        key: ValueKey(_refreshKey),
+        future: FirebaseFirestore.instance.collection('users').doc(widget.userId).get(),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return Scaffold(
+              backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
+              appBar: AppBar(
+                title: const Text('Profil'),
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                foregroundColor: isDark ? Colors.white : AppColors.deepBlue,
+              ),
+              body: const Center(child: CircularProgressIndicator()),
+            );
           }
           if (!snapshot.hasData || !snapshot.data!.exists) {
-            return const Center(child: Text('Utilisateur non trouvé.'));
+            return Scaffold(
+              backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
+              appBar: AppBar(
+                title: const Text('Profil'),
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                foregroundColor: isDark ? Colors.white : AppColors.deepBlue,
+              ),
+              body: const Center(child: Text('Utilisateur non trouvé.')),
+            );
           }
 
           final userData = snapshot.data!.data() as Map<String, dynamic>;
-          final username = userData['username'] ?? 'Inconnu';
+          final username = userData['username'] ?? userData['name'] ?? 'Inconnu';
+          final photoUrl = userData['photoUrl'] as String?;
           final score = userData['score'] ?? 0;
           final iq = (userData['iq'] as num? ?? 100.0).toDouble();
           final userBadges = List<String>.from(userData['badges'] ?? []);
+          final isMe = FirebaseAuth.instance.currentUser?.uid == widget.userId;
 
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors:
-                          isDark
-                              ? [AppColors.deepBlue, AppColors.midnightSurface]
-                              : [AppColors.primaryBlue, AppColors.quizPurple],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(24),
-                    boxShadow: [
-                      BoxShadow(
-                        color: primaryColor.withOpacity(0.3),
-                        blurRadius: 15,
-                        offset: const Offset(0, 8),
-                      ),
-                    ],
+          return Scaffold(
+            backgroundColor: isDark ? AppColors.midnight : AppColors.softWhite,
+            appBar: AppBar(
+              title: const Text('Profil'),
+              backgroundColor: Colors.transparent,
+              elevation: 0,
+              foregroundColor: isDark ? Colors.white : AppColors.deepBlue,
+              actions: [
+                if (isMe)
+                  IconButton(
+                    icon: const Icon(Icons.edit_rounded),
+                    tooltip: 'Modifier mon profil',
+                    onPressed: () async {
+                      final updated = await showDialog<bool>(
+                        context: context,
+                        builder: (_) => EditProfileDialog(
+                          currentUsername: username,
+                          currentPhotoUrl: photoUrl,
+                        ),
+                      );
+                      if (updated == true) {
+                        setState(() => _refreshKey++);
+                      }
+                    },
+                  )
+                else ...[
+                  IconButton(
+                    icon: const Icon(Icons.block_rounded, color: Colors.orange),
+                    tooltip: 'Bloquer',
+                    onPressed: () => _handleBlockUser(context, username),
                   ),
-                  child: Column(
-                    children: [
-                      CircleAvatar(
-                        radius: 40,
-                        backgroundColor: Colors.white.withOpacity(0.2),
-                        child: Text(
-                          username[0].toUpperCase(),
+                  IconButton(
+                    icon: const Icon(Icons.flag_rounded, color: Colors.redAccent),
+                    tooltip: 'Signaler',
+                    onPressed: () => _showReportDialog(context, username),
+                  ),
+                ],
+              ],
+            ),
+            body: SingleChildScrollView(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(24),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: isDark
+                            ? [AppColors.deepBlue, AppColors.midnightSurface]
+                            : [AppColors.primaryBlue, AppColors.quizPurple],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(24),
+                      boxShadow: [
+                        BoxShadow(
+                          color: primaryColor.withOpacity(0.3),
+                          blurRadius: 15,
+                          offset: const Offset(0, 8),
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        CircleAvatar(
+                          radius: 44,
+                          backgroundColor: Colors.white.withOpacity(0.2),
+                          backgroundImage: (photoUrl != null && photoUrl.isNotEmpty)
+                              ? CachedNetworkImageProvider(photoUrl)
+                              : null,
+                          child: (photoUrl == null || photoUrl.isEmpty)
+                              ? Text(
+                                  username.isNotEmpty ? username[0].toUpperCase() : '?',
+                                  style: const TextStyle(
+                                    fontSize: 34,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.white,
+                                  ),
+                                )
+                              : null,
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          username,
                           style: const TextStyle(
-                            fontSize: 32,
+                            fontSize: 24,
                             fontWeight: FontWeight.bold,
                             color: Colors.white,
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        username,
-                        style: const TextStyle(
-                          fontSize: 24,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
+                        const SizedBox(height: 18),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _buildStatItem(
+                              Icons.star_rounded,
+                              '$score',
+                              'Points',
+                              isDark,
+                            ),
+                            Container(
+                              height: 30,
+                              width: 1,
+                              color: Colors.white.withOpacity(0.3),
+                            ),
+                            _buildStatItem(
+                              Icons.psychology_alt_rounded,
+                              iq.toStringAsFixed(0),
+                              'QI',
+                              isDark,
+                            ),
+                          ],
                         ),
-                      ),
-                      const SizedBox(height: 20),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          _buildStatItem(
-                            Icons.star_rounded,
-                            '$score',
-                            'Points',
-                            isDark,
+                        if (isMe) ...[
+                          const SizedBox(height: 18),
+                          SizedBox(
+                            width: double.infinity,
+                            child: ElevatedButton.icon(
+                              onPressed: () async {
+                                final updated = await showDialog<bool>(
+                                  context: context,
+                                  builder: (_) => EditProfileDialog(
+                                    currentUsername: username,
+                                    currentPhotoUrl: photoUrl,
+                                  ),
+                                );
+                                if (updated == true) {
+                                  setState(() => _refreshKey++);
+                                }
+                              },
+                              icon: const Icon(Icons.edit_rounded, size: 18),
+                              label: const Text('Modifier mon profil (Pseudo & Photo)'),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: isDark ? AppColors.neonCyan : Colors.white,
+                                foregroundColor: isDark ? AppColors.midnight : AppColors.primaryBlue,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                              ),
+                            ),
                           ),
-                          Container(
-                            height: 30,
-                            width: 1,
-                            color: Colors.white.withOpacity(0.3),
-                          ),
-                          _buildStatItem(
-                            Icons.psychology_alt_rounded,
-                            iq.toStringAsFixed(0),
-                            'QI',
-                            isDark,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 30),
-                Text(
-                  'Collection de Badges',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? Colors.white : AppColors.deepBlue,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                AppBadges.buildBadgeGrid(userBadges),
-                const SizedBox(height: 30),
-                Text(
-                  'Créations Publiques',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? Colors.white : AppColors.deepBlue,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                FutureBuilder<QuerySnapshot>(
-                  future:
-                      FirebaseFirestore.instance
-                          .collection('quizzes')
-                          .where('userId', isEqualTo: userId)
-                          .where('isPublic', isEqualTo: true)
-                          .orderBy('timestamp', descending: true)
-                          .limit(20)
-                          .get(),
-                  builder: (context, quizSnapshot) {
-                    if (quizSnapshot.connectionState ==
-                        ConnectionState.waiting) {
-                      return const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(20),
-                          child: CircularProgressIndicator(),
-                        ),
-                      );
-                    }
-                    if (!quizSnapshot.hasData ||
-                        quizSnapshot.data!.docs.isEmpty) {
-                      return Container(
-                        padding: const EdgeInsets.all(20),
-                        decoration: BoxDecoration(
-                          color:
-                              isDark
-                                  ? AppColors.midnightSurface
-                                  : Colors.grey[100],
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Center(
-                          child: Text(
-                            'Aucun quiz public partagé.',
-                            style: TextStyle(fontStyle: FontStyle.italic),
-                          ),
-                        ),
-                      );
-                    }
-                    return ListView.separated(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: quizSnapshot.data!.docs.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 12),
-                      itemBuilder: (context, index) {
-                        final quizDoc = quizSnapshot.data!.docs[index];
-                        final quizData = quizDoc.data() as Map<String, dynamic>;
-                        final textPreview =
-                            (quizData['text']?.toString() ?? '').length > 50
-                                ? '${quizData['text'].toString().substring(0, 50)}...'
-                                : quizData['text']?.toString() ?? '';
-
-                        return StyledCard(
-                          padding: const EdgeInsets.all(12),
-                          child: Row(
+                        ] else ...[
+                          const SizedBox(height: 18),
+                          Row(
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(10),
-                                decoration: BoxDecoration(
-                                  color: primaryColor.withOpacity(0.1),
-                                  borderRadius: BorderRadius.circular(10),
-                                ),
-                                child: Icon(
-                                  Icons.quiz_rounded,
-                                  color: primaryColor,
+                              Expanded(
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _handleBlockUser(context, username),
+                                  icon: const Icon(Icons.block_rounded, size: 16, color: Colors.orangeAccent),
+                                  label: const Text('Bloquer', style: TextStyle(color: Colors.white)),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(color: Colors.orangeAccent),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
                                 ),
                               ),
                               const SizedBox(width: 12),
                               Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      quizData['theme'] ?? 'Général',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: primaryColor,
-                                      ),
-                                    ),
-                                    const SizedBox(height: 4),
-                                    Text(
-                                      textPreview,
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color:
-                                            isDark
-                                                ? Colors.white
-                                                : Colors.black87,
-                                      ),
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  ],
+                                child: OutlinedButton.icon(
+                                  onPressed: () => _showReportDialog(context, username),
+                                  icon: const Icon(Icons.flag_rounded, size: 16, color: Colors.redAccent),
+                                  label: const Text('Signaler', style: TextStyle(color: Colors.white)),
+                                  style: OutlinedButton.styleFrom(
+                                    side: const BorderSide(color: Colors.redAccent),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                  ),
                                 ),
                               ),
                             ],
                           ),
+                        ],
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+                  Text(
+                    'Collection de Badges',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : AppColors.deepBlue,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  AppBadges.buildBadgeGrid(userBadges),
+                  const SizedBox(height: 30),
+                  Text(
+                    'Créations Publiques',
+                    style: TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : AppColors.deepBlue,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  FutureBuilder<QuerySnapshot>(
+                    future: FirebaseFirestore.instance
+                        .collection('quizzes')
+                        .where('userId', isEqualTo: widget.userId)
+                        .where('isPublic', isEqualTo: true)
+                        .orderBy('timestamp', descending: true)
+                        .limit(20)
+                        .get(),
+                    builder: (context, quizSnapshot) {
+                      if (quizSnapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: Padding(
+                            padding: EdgeInsets.all(20),
+                            child: CircularProgressIndicator(),
+                          ),
                         );
-                      },
-                    );
-                  },
-                ),
-                const SizedBox(height: 20),
-              ],
+                      }
+                      if (!quizSnapshot.hasData || quizSnapshot.data!.docs.isEmpty) {
+                        return Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: isDark ? AppColors.midnightSurface : Colors.grey[100],
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          child: const Center(
+                            child: Text(
+                              'Aucun quiz public partagé.',
+                              style: TextStyle(fontStyle: FontStyle.italic),
+                            ),
+                          ),
+                        );
+                      }
+                      return ListView.separated(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: quizSnapshot.data!.docs.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          final quizDoc = quizSnapshot.data!.docs[index];
+                          final quizData = quizDoc.data() as Map<String, dynamic>;
+                          final textPreview =
+                              (quizData['text']?.toString() ?? '').length > 50
+                                  ? '${quizData['text'].toString().substring(0, 50)}...'
+                                  : quizData['text']?.toString() ?? '';
+
+                          return StyledCard(
+                            padding: const EdgeInsets.all(12),
+                            child: Row(
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.all(10),
+                                  decoration: BoxDecoration(
+                                    color: primaryColor.withOpacity(0.1),
+                                    borderRadius: BorderRadius.circular(10),
+                                  ),
+                                  child: Icon(
+                                    Icons.quiz_rounded,
+                                    color: primaryColor,
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        quizData['theme'] ?? 'Général',
+                                        style: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.bold,
+                                          color: primaryColor,
+                                        ),
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        textPreview,
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          color: isDark ? Colors.white : Colors.black87,
+                                        ),
+                                        maxLines: 2,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 20),
+                ],
+              ),
             ),
           );
         },
@@ -9891,15 +11403,16 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     if (_isSearchingPublic) {
       return Scaffold(body: _buildSearchingRadar());
     }
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text(
-          'Jeu en ligne',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+        title: Text(
+          l10n.playOnline,
+          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         flexibleSpace: Container(
           decoration: const BoxDecoration(
@@ -9931,7 +11444,7 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
             if (!widget.isGuest && !_showCreateRoom && !_showJoinRoom) ...[
               const SizedBox(height: 10),
               _buildMenuCard(
-                title: 'Créer une partie',
+                title: l10n.createGame,
                 subtitle: 'Hébergez votre propre quiz',
                 icon: Icons.add_moderator_rounded,
                 gradient: [const Color(0xFF6C3FC7), const Color(0xFF4A148C)],
@@ -9967,18 +11480,18 @@ class _OnlineOptionsPageState extends State<OnlineOptionsPage> {
                       color: AppColors.primaryBlue,
                     ),
                     const SizedBox(height: 16),
-                    const Text(
-                      'Code d\'invitation',
-                      style: TextStyle(
+                    Text(
+                      l10n.inviteCode,
+                      style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
                     const SizedBox(height: 8),
-                    const Text(
-                      'Entrez le code à 6 chiffres fourni par l\'hôte',
+                    Text(
+                      l10n.enter6DigitCode,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey),
+                      style: const TextStyle(color: Colors.grey),
                     ),
                     const SizedBox(height: 24),
                     TextField(
@@ -10474,12 +11987,15 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
             final newPlayers = Map<String, dynamic>.from(data['players'] ?? {});
 
             if (_players.isNotEmpty) {
-              final oldPlayerNames = _players.keys.toSet();
-              final newPlayerNames = newPlayers.keys.toSet();
+              final currentUid = FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+              final oldPlayerUids = _players.keys.toSet();
+              final newPlayerUids = newPlayers.keys.toSet();
 
-              final leftPlayers = oldPlayerNames.difference(newPlayerNames);
-              for (String pName in leftPlayers) {
-                if (pName != widget.playerName && mounted) {
+              final leftUids = oldPlayerUids.difference(newPlayerUids);
+              for (String pUid in leftUids) {
+                final pData = _players[pUid];
+                final pName = (pData is Map ? pData['name'] : null)?.toString() ?? pUid;
+                if (pUid != currentUid && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('🏃 $pName a quitté la partie.'),
@@ -10490,9 +12006,11 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                 }
               }
 
-              final joinedPlayers = newPlayerNames.difference(oldPlayerNames);
-              for (String pName in joinedPlayers) {
-                if (pName != widget.playerName && mounted) {
+              final joinedUids = newPlayerUids.difference(oldPlayerUids);
+              for (String pUid in joinedUids) {
+                final pData = newPlayers[pUid];
+                final pName = (pData is Map ? pData['name'] : null)?.toString() ?? pUid;
+                if (pUid != currentUid && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('👋 $pName a rejoint la partie.'),
@@ -10522,10 +12040,18 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
               return;
             }
 
-            // Gestion du compte à rebours synchronisé via Stopwatch local (insensible à la manipulation d'horloge)
-            if (data.containsKey('countdownStartTime')) {
-              _countdownStopwatch ??= Stopwatch()..start();
-              final elapsedSeconds = _countdownStopwatch!.elapsed.inSeconds;
+            // Gestion du compte à rebours synchronisé via Timestamp serveur Firestore
+            if (data.containsKey('countdownStartTime') &&
+                data['countdownStartTime'] != null) {
+              int elapsedSeconds = 0;
+              final rawTime = data['countdownStartTime'];
+              if (rawTime is Timestamp) {
+                final startTime = rawTime.toDate();
+                elapsedSeconds = DateTime.now().difference(startTime).inSeconds;
+              } else {
+                _countdownStopwatch ??= Stopwatch()..start();
+                elapsedSeconds = _countdownStopwatch!.elapsed.inSeconds;
+              }
               final newCountdown = max(0, 10 - elapsedSeconds);
 
               if (mounted)
@@ -10728,6 +12254,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     bool isFull = _players.length == widget.maxPlayers;
     return PopScope(
       canPop: false,
@@ -10737,7 +12264,7 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Salle d\'attente'),
+          title: Text(l10n.waitingRoom),
           flexibleSpace: Container(
             decoration: const BoxDecoration(
               gradient: LinearGradient(
@@ -10761,9 +12288,9 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                   padding: const EdgeInsets.all(16.0),
                   child: Column(
                     children: [
-                      const Text(
-                        'Code d\'invitation',
-                        style: TextStyle(
+                      Text(
+                        l10n.inviteCode,
+                        style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
@@ -10929,18 +12456,13 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
                                       decoration: BoxDecoration(
                                         color:
                                             isMe
-                                                ? Colors.blueAccent.withValues(
-                                                  alpha: 0.25,
-                                                )
-                                                : Colors.grey.withValues(
-                                                  alpha: 0.2,
-                                                ),
+                                                ? Colors.blueAccent.withOpacity(0.25)
+                                                : Colors.grey.withOpacity(0.2),
                                         borderRadius: BorderRadius.circular(12),
                                         border: Border.all(
                                           color:
                                               isMe
-                                                  ? Colors.blueAccent
-                                                      .withValues(alpha: 0.5)
+                                                  ? Colors.blueAccent.withOpacity(0.5)
                                                   : Colors.transparent,
                                         ),
                                       ),
@@ -11031,14 +12553,14 @@ class _WaitingRoomPageState extends State<WaitingRoomPage>
               else if (widget.isHost)
                 ElevatedButton(
                   onPressed: _players.length >= 2 ? _startCountdown : null,
-                  child: const Text('Démarrer la partie (min 2 joueurs)'),
+                  child: Text(l10n.startGame),
                 )
               else
-                const Column(
+                Column(
                   children: [
-                    CircularProgressIndicator(),
-                    SizedBox(height: 16),
-                    Text('En attente de l\'hôte ou d\'autres joueurs...'),
+                    const CircularProgressIndicator(),
+                    const SizedBox(height: 16),
+                    Text(l10n.waitingForPlayers),
                   ],
                 ),
             ],
@@ -11080,7 +12602,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   OnlineRoomSettings? _settings;
   Map<String, dynamic> _gameState = {};
   bool _localAnswerSubmitted = false;
+  String? _localSelectedAnswer;
+  bool? _localIsCorrect;
   String _feedback = '';
+  String? _currentCorrectAnswer;
   Timer? _timer;
   final ValueNotifier<int> _remainingTime = ValueNotifier<int>(0);
   final _answerController = TextEditingController();
@@ -11189,12 +12714,15 @@ class _OnlineGamePageState extends State<OnlineGamePage>
             final int newPlayerCount = newPlayers.length;
 
             if (_players.isNotEmpty) {
-              final oldPlayerNames = _players.keys.toSet();
-              final newPlayerNames = newPlayers.keys.toSet();
+              final currentUid = FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
+              final oldPlayerUids = _players.keys.toSet();
+              final newPlayerUids = newPlayers.keys.toSet();
 
-              final leftPlayers = oldPlayerNames.difference(newPlayerNames);
-              for (String pName in leftPlayers) {
-                if (pName != widget.playerName && mounted) {
+              final leftUids = oldPlayerUids.difference(newPlayerUids);
+              for (String pUid in leftUids) {
+                final pData = _players[pUid];
+                final pName = (pData is Map ? pData['name'] : null)?.toString() ?? pUid;
+                if (pUid != currentUid && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('🏃 $pName a quitté la partie.'),
@@ -11205,9 +12733,11 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                 }
               }
 
-              final joinedPlayers = newPlayerNames.difference(oldPlayerNames);
-              for (String pName in joinedPlayers) {
-                if (pName != widget.playerName && mounted) {
+              final joinedUids = newPlayerUids.difference(oldPlayerUids);
+              for (String pUid in joinedUids) {
+                final pData = newPlayers[pUid];
+                final pName = (pData is Map ? pData['name'] : null)?.toString() ?? pUid;
+                if (pUid != currentUid && mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     SnackBar(
                       content: Text('👋 $pName a rejoint la partie.'),
@@ -11341,6 +12871,8 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (!_isMounted) return;
     setState(() {
       _localAnswerSubmitted = false;
+      _localSelectedAnswer = null;
+      _localIsCorrect = null;
       _isMatchSubmitted = false;
       _onlineMatches.clear();
       _feedback = '';
@@ -11351,6 +12883,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       _quizEclairTimeLeft.value = 8;
       _quizEclairSelectedAnswer = null;
       _quizEclairShowHint = false;
+      _currentCorrectAnswer = null;
 
       _gameHintVisible = false;
     });
@@ -11398,7 +12931,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
   Future<void> _submitAnswer(dynamic userAnswer) async {
     if (_localAnswerSubmitted) return;
-    setState(() => _localAnswerSubmitted = true);
+    setState(() {
+      _localAnswerSubmitted = true;
+      _localSelectedAnswer = userAnswer?.toString();
+    });
 
     try {
       final callable = FirebaseFunctions.instance.httpsCallable(
@@ -11412,13 +12948,21 @@ class _OnlineGamePageState extends State<OnlineGamePage>
 
       final isCorrect = result.data['isCorrect'] == true;
       final points = result.data['pointsEarned'] ?? 0;
+      final serverCorrectAnswer = result.data['correctAnswer']?.toString();
 
       if (mounted) {
         setState(() {
-          _feedback =
-              isCorrect
-                  ? 'Bonne réponse ! (+$points pts)'
-                  : 'Mauvaise réponse...';
+          _localIsCorrect = isCorrect;
+          _currentCorrectAnswer = serverCorrectAnswer;
+          if (isCorrect) {
+            _feedback = 'Bonne réponse ! (+$points pts)';
+          } else if (serverCorrectAnswer != null &&
+              serverCorrectAnswer.isNotEmpty) {
+            _feedback =
+                'Mauvaise réponse... La solution était : $serverCorrectAnswer';
+          } else {
+            _feedback = 'Mauvaise réponse...';
+          }
         });
       }
     } catch (e) {
@@ -11583,7 +13127,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     if (!widget.isHost) return;
     if (_players.isEmpty) return;
 
-    final firstPlayerUid = _players.keys.first;
+    final firstPlayerUid = (_players.keys.toList()..sort()).first;
     final game = _games[_gameState['currentGameIndex']];
     final secretWord = game['word']?.toString() ?? '';
 
@@ -11738,7 +13282,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     }
     initialCards.shuffle();
 
-    final firstPlayerKey = _players.keys.first;
+    final firstPlayerKey = (_players.keys.toList()..sort()).first;
 
     await FirebaseFirestore.instance
         .collection('onlineRooms')
@@ -11897,7 +13441,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         // On passe le tour seulement en tour par tour ET si c'est bien à ce joueur de jouer
         if (_settings?.memoryMode == 'turnBased' &&
             currentPlayerName == playerUid) {
-          final playerKeys = players.keys.toList();
+          final playerKeys = players.keys.toList()..sort();
           final currentIndex = playerKeys.indexOf(playerUid);
           final nextIndex = (currentIndex + 1) % playerKeys.length;
           mState['currentPlayerName'] = playerKeys[nextIndex];
@@ -11937,12 +13481,12 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     List<String> items2Options = [];
 
     if (displayMode == 'imageToDefinition') {
-      items1 = pairsData.map((p) => p['image_url'].toString()).toList();
-      items2Options = pairsData.map((p) => p['definition'].toString()).toList();
+      items1 = pairsData.map((p) => (p['image_url'] ?? p['image_description'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
+      items2Options = pairsData.map((p) => (p['definition'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
     } else {
       // definitionToWord
-      items1 = pairsData.map((p) => p['definition'].toString()).toList();
-      items2Options = pairsData.map((p) => p['word'].toString()).toList();
+      items1 = pairsData.map((p) => (p['definition'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
+      items2Options = pairsData.map((p) => (p['word'] ?? p['image_description'] ?? '').toString()).where((s) => s.isNotEmpty).toList();
     }
     items2Options.shuffle();
 
@@ -11961,7 +13505,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   void _initializeMotMystereInFirestore() async {
     if (!widget.isHost) return;
 
-    final firstPlayerKey = _players.keys.first;
+    final firstPlayerKey = (_players.keys.toList()..sort()).first;
 
     final game = _games[_gameState['currentGameIndex']];
     final secretWord = game['word']?.toString() ?? '';
@@ -12221,7 +13765,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       final currentPlayer = hState['currentPlayerName'] as String?;
       if (currentPlayer != null && !currentPlayers.containsKey(currentPlayer)) {
         // Le joueur courant a quitté — passer au suivant
-        final remaining = currentPlayers.keys.toList();
+        final remaining = currentPlayers.keys.toList()..sort();
         if (remaining.isEmpty) return;
         final nextPlayer = remaining.first;
         FirebaseFirestore.instance
@@ -12235,7 +13779,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (mmState == null || mmState['gameOver'] == true) return;
       final currentPlayer = mmState['currentPlayerName'] as String?;
       if (currentPlayer != null && !currentPlayers.containsKey(currentPlayer)) {
-        final remaining = currentPlayers.keys.toList();
+        final remaining = currentPlayers.keys.toList()..sort();
         if (remaining.isEmpty) return;
         final nextPlayer = remaining.first;
         FirebaseFirestore.instance
@@ -12251,7 +13795,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
       if (_settings?.memoryMode == 'race') return;
       final currentPlayer = mState['currentPlayerName'] as String?;
       if (currentPlayer != null && !currentPlayers.containsKey(currentPlayer)) {
-        final remaining = currentPlayers.keys.toList();
+        final remaining = currentPlayers.keys.toList()..sort();
         if (remaining.isEmpty) return;
         final nextPlayer = remaining.first;
         FirebaseFirestore.instance
@@ -12405,7 +13949,10 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     final gameType = game['type']?.toString() ?? '';
     String correctAnswerText = 'Information non disponible.';
 
-    try {
+    if (_currentCorrectAnswer != null && _currentCorrectAnswer!.trim().isNotEmpty) {
+      correctAnswerText = _currentCorrectAnswer!;
+    } else {
+      try {
       if (gameType.contains('Vrai ou Faux')) {
         final decoded =
             _decodeWordSecret(game['answer']?.toString()).toLowerCase();
@@ -12468,8 +14015,9 @@ class _OnlineGamePageState extends State<OnlineGamePage>
               .join('\n');
         }
       }
-    } catch (e) {
-      print("Erreur de récupération de la bonne réponse: $e");
+      } catch (e) {
+        print("Erreur de récupération de la bonne réponse: $e");
+      }
     }
 
     return Column(
@@ -12512,6 +14060,7 @@ class _OnlineGamePageState extends State<OnlineGamePage>
   }
 
   Widget _buildLeaderboardWidget() {
+    final currentUid = FirebaseAuth.instance.currentUser?.uid ?? widget.playerName;
     final sortedPlayers =
         _players.entries.toList()..sort(
           (a, b) =>
@@ -12529,10 +14078,13 @@ class _OnlineGamePageState extends State<OnlineGamePage>
         ),
         const SizedBox(height: 16),
         ...sortedPlayers.map((entry) {
-          final pName =
+          final rawName =
               (entry.value is Map && entry.value['name'] != null)
-                  ? entry.value['name'].toString()
-                  : entry.key;
+                  ? entry.value['name'].toString().trim()
+                  : null;
+          final pName = (rawName != null && rawName.isNotEmpty)
+              ? rawName
+              : (entry.key == currentUid ? 'Moi' : 'Joueur ${sortedPlayers.indexOf(entry) + 1}');
           return Card(
             child: ListTile(
               leading: Text('#${sortedPlayers.indexOf(entry) + 1}'),
@@ -12771,28 +14323,59 @@ class _OnlineGamePageState extends State<OnlineGamePage>
     final qImageUrl = questionData['image_url'] ?? game['image_url'];
     final qText = questionData['text']?.toString() ?? '';
 
-    Widget questionWidget = Column(
-      children: [
-        if (_settings!.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: Image.network(
-              qImageUrl,
-              height: 150,
-              fit: BoxFit.contain,
-              errorBuilder:
-                  (context, error, stack) => Icon(Icons.broken_image, size: 50),
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    Widget questionWidget = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.midnightCard : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDark ? Colors.white12 : Colors.grey.shade200,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (_settings!.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: CachedNetworkImage(
+                  imageUrl: qImageUrl,
+                  height: 180,
+                  fit: BoxFit.contain,
+                  placeholder: (context, url) => const SizedBox(
+                    height: 180,
+                    child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+                  ),
+                  errorWidget: (context, error, stack) =>
+                      const Icon(Icons.broken_image, size: 50),
+                ),
+              ),
             ),
-          ),
-        if ((_settings!.qcmQuestionMode != DisplayMode.image ||
-                qImageUrl == null) &&
-            qText.isNotEmpty)
-          Text(
-            qText,
-            style: const TextStyle(fontSize: 18),
-            textAlign: TextAlign.center,
-          ),
-      ],
+          if ((_settings!.qcmQuestionMode != DisplayMode.image ||
+                  qImageUrl == null) &&
+              qText.isNotEmpty)
+            Text(
+              qText,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                height: 1.35,
+              ),
+              textAlign: TextAlign.center,
+            ),
+        ],
+      ),
     );
 
     return Column(
@@ -12807,7 +14390,6 @@ class _OnlineGamePageState extends State<OnlineGamePage>
           if (option is Map) {
             optionText = option['text'] ?? '';
             imageUrl = option['image_url'];
-
             valueToCompare = option['text'];
           } else {
             optionText = option.toString();
@@ -12821,52 +14403,26 @@ class _OnlineGamePageState extends State<OnlineGamePage>
                   imageUrl == null) &&
               optionText.isNotEmpty;
 
-          return Container(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            constraints: BoxConstraints(
-              minHeight: (showImage && showText) ? 120 : (showImage ? 90 : 56),
-            ),
-            child: Card(
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap:
-                    _localAnswerSubmitted
-                        ? null
-                        : () {
-                          _submitAnswer(valueToCompare);
-                        },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (showImage)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: Image.network(
-                            imageUrl!,
-                            height: 90,
-                            fit: BoxFit.contain,
-                            errorBuilder:
-                                (context, error, stack) =>
-                                    const Icon(Icons.broken_image, size: 40),
-                          ),
-                        ),
-                      if (showText)
-                        Text(
-                          optionText,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 15),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          final bool isSelected = _localSelectedAnswer == valueToCompare;
+          bool? isCorrectOption;
+          if (_localAnswerSubmitted) {
+            if (correctAnswer.isNotEmpty && valueToCompare == correctAnswer) {
+              isCorrectOption = true;
+            } else if (isSelected) {
+              isCorrectOption = _localIsCorrect;
+            }
+          }
+
+          return ModernOptionTile(
+            text: showText ? optionText : '',
+            imageUrl: showImage ? imageUrl : null,
+            isSelected: isSelected,
+            isCorrect: isCorrectOption,
+            onTap: _localAnswerSubmitted
+                ? () {}
+                : () {
+                    _submitAnswer(valueToCompare);
+                  },
           );
         }).toList(),
       ],
@@ -13568,6 +15124,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
 
   // État pour l'anagramme (lettres mélangées garanties)
   String _currentAnagram = '';
+  String? _selectedOptionAnswer;
   late final PageController _pageController;
 
   @override
@@ -13596,6 +15153,7 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     setState(() {
       _feedback = '';
       _answered = false;
+      _selectedOptionAnswer = null;
       _answerController.clear();
       _matches.clear();
       _memoryCards.clear();
@@ -14249,19 +15807,19 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
       emoji = '🎯 Parfait ! Réponse exacte !';
     } else if (percentError <= 0.01) {
       points = 9;
-      emoji = 'ðŸ”¥ Excellent ! Erreur < 1%.';
+      emoji = '🔥 Excellent ! Erreur < 1%.';
     } else if (percentError <= 0.05) {
       points = 7;
-      emoji = 'â­ Très bien ! Erreur < 5%.';
+      emoji = '⭐ Très bien ! Erreur < 5%.';
     } else if (percentError <= 0.15) {
       points = 5;
-      emoji = 'ðŸ‘ Bien ! Erreur < 15%.';
+      emoji = '👍 Bien ! Erreur < 15%.';
     } else if (percentError <= 0.30) {
       points = 2;
-      emoji = 'ðŸ™‚ Pas loin ! Erreur < 30%.';
+      emoji = '🙂 Pas loin ! Erreur < 30%.';
     } else {
       points = 0;
-      emoji = 'âŒ Trop éloigné.';
+      emoji = '❌ Trop éloigné.';
     }
     final unitStr = unit != null && unit.isNotEmpty ? ' $unit' : '';
     final correctStr = correctAnswer.toStringAsFixed(
@@ -15455,6 +17013,17 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
                     backgroundColor: const Color(0xFF6C3FC7).withOpacity(0.1),
                   ),
                 ],
+                if (hint != null && hint.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    'Indice : $hint',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontStyle: FontStyle.italic,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -15587,25 +17156,49 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
     final qImageUrl = questionData['image_url'] ?? game['image_url'];
     final qText = questionData['text']?.toString() ?? '';
 
-    Widget questionWidget = Column(
-      children: [
-        if (widget.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8.0),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: _cachedImage(qImageUrl, height: 150, fit: BoxFit.contain),
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    Widget questionWidget = Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDark ? AppColors.midnightCard : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDark ? Colors.white12 : Colors.grey.shade200,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          if (widget.qcmQuestionMode != DisplayMode.text && qImageUrl != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: _cachedImage(qImageUrl, height: 180, fit: BoxFit.contain),
+              ),
             ),
-          ),
-        if ((widget.qcmQuestionMode != DisplayMode.image ||
-                qImageUrl == null) &&
-            qText.isNotEmpty)
-          Text(
-            qText,
-            style: const TextStyle(fontSize: 18),
-            textAlign: TextAlign.center,
-          ),
-      ],
+          if ((widget.qcmQuestionMode != DisplayMode.image ||
+                  qImageUrl == null) &&
+              qText.isNotEmpty)
+            Text(
+              qText,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                height: 1.35,
+              ),
+              textAlign: TextAlign.center,
+            ),
+        ],
+      ),
     );
 
     return Column(
@@ -15620,7 +17213,6 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
           if (option is Map) {
             optionText = option['text'] ?? '';
             imageUrl = option['image_url'];
-
             valueToCompare = option['text'];
           } else {
             optionText = option.toString();
@@ -15633,52 +17225,29 @@ class _GamePageState extends State<GamePage> with TickerProviderStateMixin {
               (widget.qcmAnswerMode != DisplayMode.image || imageUrl == null) &&
               optionText.isNotEmpty;
 
-          return Container(
-            margin: const EdgeInsets.symmetric(vertical: 4),
-            constraints: BoxConstraints(
-              minHeight: (showImage && showText) ? 120 : (showImage ? 90 : 56),
-            ),
-            child: Card(
-              clipBehavior: Clip.antiAlias,
-              child: InkWell(
-                onTap:
-                    _answered
-                        ? null
-                        : () {
-                          _checkAnswer(valueToCompare);
-                        },
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      if (showImage)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 8.0),
-                          child: Image.network(
-                            imageUrl!,
-                            height: 90,
-                            fit: BoxFit.contain,
-                            errorBuilder:
-                                (context, error, stack) =>
-                                    const Icon(Icons.broken_image, size: 40),
-                          ),
-                        ),
-                      if (showText)
-                        Text(
-                          optionText,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 15),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          final bool isSelected = _selectedOptionAnswer == valueToCompare;
+          bool? isCorrectOption;
+          if (_answered) {
+            if (valueToCompare == correctAnswer) {
+              isCorrectOption = true;
+            } else if (isSelected) {
+              isCorrectOption = false;
+            }
+          }
+
+          return ModernOptionTile(
+            text: showText ? optionText : '',
+            imageUrl: showImage ? imageUrl : null,
+            isSelected: isSelected,
+            isCorrect: isCorrectOption,
+            onTap: _answered
+                ? () {}
+                : () {
+                    setState(() {
+                      _selectedOptionAnswer = valueToCompare;
+                    });
+                    _checkAnswer(valueToCompare);
+                  },
           );
         }).toList(),
       ],

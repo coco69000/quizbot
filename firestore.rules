@@ -1,25 +1,72 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // 1. Configuration de l'application (Mise à jour forcée & Maintenance)
+    match /config/{configId} {
+      allow read: if true;
+      allow write: if false; // Modifiable uniquement depuis la console Firebase
+    }
+
+    // 2. Profils utilisateurs
     match /users/{userId} {
       allow read: if request.auth != null;
-      allow update: if request.auth != null && request.auth.uid == userId;
-      allow create: if request.auth != null;
+      // Empêche un utilisateur d'écraser le compte d'un autre ou de s'auto-attribuer le VIP
+      allow create: if request.auth != null 
+                    && request.auth.uid == userId
+                    && (!('isVip' in request.resource.data) || request.resource.data.isVip == false);
+      // Empêche de modifier le compte d'un autre joueur et protège les champs sensibles (isVip, quotas)
+      allow update: if request.auth != null 
+                    && request.auth.uid == userId
+                    && !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+                      'isVip', 
+                      'vipActivatedAt', 
+                      'dailyAiImageCount', 
+                      'dailyImageGenerationsCount'
+                    ]);
+      allow delete: if request.auth != null && request.auth.uid == userId;
     }
+
+    // 3. Demandes d'amis (Seuls l'expéditeur et le destinataire y ont accès)
     match /friendRequests/{requestId} {
-      allow read, create, update: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.senderId == request.auth.uid;
+      allow read, update, delete: if request.auth != null && (
+        resource.data.senderId == request.auth.uid || 
+        resource.data.receiverId == request.auth.uid
+      );
     }
+
+    // 4. Salons de jeu en ligne (et sous-collection de CHAT incluse)
     match /onlineRooms/{roomId} {
       allow read, write: if request.auth != null;
+      
+      // Correction : Autoriser les messages du chat en direct
+      match /chat/{messageId} {
+        allow read, create: if request.auth != null;
+      }
     }
+
+    // 5. Quiz (Tout le monde peut lire les quiz publics ou les siens, mais seul le créateur peut modifier/supprimer)
     match /quizzes/{quizId} {
-      allow read, write: if request.auth != null;
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if request.auth != null && resource.data.userId == request.auth.uid;
     }
+
+    // 6. Statistiques et QI
     match /userStats/{userId} {
       allow read: if request.auth != null;
+      allow write: if request.auth != null && request.auth.uid == userId;
     }
+
+    // 7. Historique des parties (Chacun ne peut lire et supprimer QUE son propre historique)
     match /userGameHistory/{historyId} {
-      allow read: if request.auth != null;
+      allow read, delete: if request.auth != null && resource.data.userId == request.auth.uid;
+    }
+
+    // 8. Signalements (Création seule, pas de lecture par les joueurs)
+    match /reports/{reportId} {
+      allow create: if request.auth != null && request.resource.data.reporterId == request.auth.uid;
     }
   }
 }

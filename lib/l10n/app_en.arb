@@ -1,0 +1,72 @@
+{
+  "@@locale": "en",
+  "appTitle": "QuizBot",
+  "login": "Login",
+  "register": "Sign Up",
+  "welcome": "Welcome!",
+  "createAccount": "Create your account",
+  "username": "Username",
+  "email": "Email",
+  "password": "Password",
+  "passwordLengthError": "Password must be at least 8 characters.",
+  "passwordDigitError": "Password must contain at least 1 number.",
+  "joinWithCode": "Join with a code",
+  "haveAccount": "Already have an account? Log in",
+  "noAccount": "Don't have an account? Sign up",
+  "createTab": "Create",
+  "myGamesTab": "My Games",
+  "leaderboardTab": "Leaderboard",
+  "myIQTab": "My IQ",
+  "friendsTab": "Friends",
+  "settings": "Settings",
+  "appearance": "APPEARANCE",
+  "themeLight": "Light",
+  "themeDark": "Dark",
+  "themeSystem": "System",
+  "language": "LANGUAGE",
+  "account": "ACCOUNT",
+  "logout": "Log out",
+  "deleteAccount": "Delete my account",
+  "deleteAccountConfirmTitle": "Delete account?",
+  "deleteAccountConfirmMessage": "This action cannot be undone. All your quizzes, scores, and IQ stats will be permanently erased.",
+  "confirm": "Confirm",
+  "cancel": "Cancel",
+  "generateWithAI": "Generate with AI",
+  "generating": "Generating...",
+  "playOnline": "Play Online",
+  "createGame": "Create Game",
+  "joinRoom": "Join Room",
+  "inviteCode": "Invite Code",
+  "enter6DigitCode": "Enter the 6-digit code provided by the host",
+  "waitingRoom": "Waiting Room",
+  "waitingForPlayers": "Waiting for host or players...",
+  "startGame": "Start Game",
+  "playerLeft": "{player} left the game.",
+  "@playerLeft": {
+    "placeholders": {
+      "player": { "type": "String" }
+    }
+  },
+  "playerJoined": "{player} joined the game.",
+  "@playerJoined": {
+    "placeholders": {
+      "player": { "type": "String" }
+    }
+  },
+  "correct": "Correct!",
+  "incorrect": "Incorrect.",
+  "timeRemaining": "Time left: {seconds}s",
+  "@timeRemaining": {
+    "placeholders": {
+      "seconds": { "type": "int" }
+    }
+  },
+  "nextQuestion": "Next Question",
+  "finishQuiz": "Finish Quiz",
+  "podium": "Podium",
+  "finalRanking": "Final Ranking",
+  "backToMenu": "Back to Menu",
+  "seeHint": "Show hint",
+  "trueLabel": "True",
+  "falseLabel": "False"
+}
